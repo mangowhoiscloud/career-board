@@ -9,7 +9,7 @@
 
 **Mood**: mission console. Dense, calm, legible at a glance. The board answers "지금 어디까지 왔나" in under 5 seconds: counts first, rows second, detail on demand.
 
-**Adjectives**: dark, dense, status-driven, keyboard-friendly, audit-honest.
+**Adjectives**: dark, dense, status-driven, keyboard-friendly, audit-honest. **Identity: amber terminal ledger** — 무채색 차콜 위 앰버 단일 신호, IBM Plex 모노 원장 감성. 레퍼런스 계보: Teal(테이블+파이프라인 카운트 구조) · Linear(보더리스 행, 위계는 정렬·타이포로) · Geist(회색 역할 고정) · Raycast(다크 가독 보정).
 
 **What it is not**: a marketing page, a kanban toy, a gradient dashboard template. No hero section, no illustrations, no emoji decoration, no card shadows stacked for depth. Rejections are shown plainly (red, not hidden) — the board exists to face the funnel, not to flatter it.
 
@@ -17,59 +17,48 @@
 
 | Role | Hex | Usage |
 |---|---|---|
-| `bg` | `#0E1116` | Page background. |
-| `surface` | `#161B22` | Table rows, stat cards, modal. |
-| `surface-raised` | `#1C2330` | Hover rows, dropdown. |
-| `border` | `#262D37` | 1px hairlines everywhere. No shadows. |
-| `text` | `#E6EDF3` | Primary text. |
-| `text-2` | `#9DA7B3` | Secondary: dates, channels, notes. |
-| `text-3` | `#6E7681` | Tertiary: row numbers, placeholders. |
-| `accent` | `#58A6FF` | Links, focus rings, active filter. |
+| `bg` | `#0B0B0C` | Page. 무채색 (보라끼 금지). |
+| `bg-panel` | `#121214` | Drawer, menu, inputs. |
+| `bg-hover` / `bg-active` | `#18181B` / `#1F1F23` | 행 hover / 활성 필터. |
+| `border` / `border-strong` | `#232327` / `#2F2F35` | 헤어라인 / 패널 보더. |
+| `text` / `text-2` / `text-3` | `#ECECEE` / `#9F9FA6` / `#6B6B72` | 3단 고정. 즉석 회색 생성 금지. |
+| `amber` | `#E8A33D` | 유일한 크롬 액센트: 링크·포커스·CTA·상단 파워 헤어라인. 블루 액센트 금지. |
 
 **Status colors** (the only place color carries meaning — never reuse for decoration):
 
 | Status | Key | Hex |
 |---|---|---|
-| 준비 | `ready` | `#8B949E` |
-| 제출 | `submitted` | `#58A6FF` |
-| 서류통과 | `screening` | `#BC8CFF` |
-| 과제 | `assignment` | `#F2CC60` |
-| 면접 | `interview` | `#56D364` |
-| 오퍼 | `offer` | `#3FB950` |
-| 서류탈락 | `rejected-docs` | `#F85149` |
-| 과제탈락 | `rejected-assignment` | `#FF7B72` |
-| 면접탈락 | `rejected-interview` | `#C93C37` |
-| 보류·마감 | `hold` | `#6E7681` |
+| 준비 | `ready` | `#6B6B72` |
+| 제출 | `submitted` | `#C9C9CF` |
+| 서류통과 | `screening` | `#E9C46A` |
+| 과제 | `assignment` | `#E8A33D` |
+| 면접 | `interview` | `#F08C00` |
+| 오퍼 | `offer` | `#46C68A` |
+| 서류탈락 | `rejected-docs` | `#A04A45` |
+| 과제탈락 | `rejected-assignment` | `#B45A50` |
+| 면접탈락 | `rejected-interview` | `#7E3B38` |
+| 보류 | `hold` | `#515158` |
 
-Status chips: `color` at full hex, `background` at 14% alpha of the same hex, 1px border at 35% alpha. No filled solid chips.
+진행 단계 = 앰버 램프(밝→진), 탈락 = dim red 램프 + **행 텍스트 톤 강등(dim)**. 색은 7px 도트와 분포 스파인에만.
 
 ## 3. Typography Rules
 
-Stack (Korean-first, no webfont fetch for text):
+Pairing (단일 패밀리 시스템 — 한·영·모노 모두 IBM Plex):
 
 ```
-'Apple SD Gothic Neo', 'Pretendard', 'Malgun Gothic', -apple-system, sans-serif
+sans: 'IBM Plex Sans KR', 'Apple SD Gothic Neo', sans-serif   (400/500/600)
+mono: 'IBM Plex Mono', ui-monospace, monospace                 (400/500/600)
 ```
 
-Numerals/dates/IDs use `ui-monospace, 'SF Mono', Menlo, monospace`.
-
-| Element | Size | Weight |
-|---|---|---|
-| page title | 18px | 700 |
-| stat number | 26px mono | 700 |
-| stat label | 11px | 500, letter-spacing 0.06em, uppercase-like muted |
-| table header | 11px | 600, `text-3` |
-| table cell | 13px / 1.45 | 400 |
-| company name | 13px | 600 |
-| status chip | 11px | 600 |
-| notes | 12px | 400 `text-2` |
+mono의 역할: 워드마크(`career.board`, 앰버 마침표), 라인 넘버, 날짜·수치(tabular-nums), 컬럼 헤더, wave 헤더, 채널명, 드로어 섹션 라벨(uppercase tracking 0.1em). 본문·회사명·메모는 sans. **사이즈는 13/12/11/10.5px 4단으로 끝** — 큰 숫자 히어로(stat 카드) 금지.
 
 ## 4. Spacing & Layout Grid
 
 - Max content width **1080px**, centered, `24px` side padding.
 - Vertical rhythm in 8px steps. Stat strip → filters → table: `20px` gaps.
-- Table rows `10px 12px` padding, hairline-separated. No zebra striping (status chips already carry color load).
-- Stat strip: CSS grid `repeat(auto-fit, minmax(120px, 1fr))`, cards `12px` padding.
+- **행: 높이 37px 고정, 행간 보더 없음, hover 배경 1단만.** 구분은 정렬·간격·wave 룰(헤어라인+카운트)로.
+- 라인 넘버: CSS counter `decimal-leading-zero`, mono 10.5px, opacity 0.55 — 원장 시그니처.
+- radius 4~6px로 통일. 그림자는 floating menu 1곳만.
 
 ## 5. Components
 
