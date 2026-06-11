@@ -5,7 +5,9 @@ export type Status =
   | 'assignment'
   | 'interview'
   | 'offer'
-  | 'rejected'
+  | 'rejected-docs'
+  | 'rejected-assignment'
+  | 'rejected-interview'
   | 'hold'
 
 export const STATUS_LABEL: Record<Status, string> = {
@@ -15,7 +17,9 @@ export const STATUS_LABEL: Record<Status, string> = {
   assignment: '과제',
   interview: '면접',
   offer: '오퍼',
-  rejected: '탈락',
+  'rejected-docs': '서류탈락',
+  'rejected-assignment': '과제탈락',
+  'rejected-interview': '면접탈락',
   hold: '보류',
 }
 
@@ -26,7 +30,9 @@ export const STATUS_COLOR: Record<Status, string> = {
   assignment: '#F2CC60',
   interview: '#56D364',
   offer: '#3FB950',
-  rejected: '#F85149',
+  'rejected-docs': '#F85149',
+  'rejected-assignment': '#FF7B72',
+  'rejected-interview': '#C93C37',
   hold: '#6E7681',
 }
 
@@ -37,7 +43,9 @@ export const STATUS_ORDER: Status[] = [
   'assignment',
   'interview',
   'offer',
-  'rejected',
+  'rejected-docs',
+  'rejected-assignment',
+  'rejected-interview',
   'hold',
 ]
 

@@ -36,7 +36,9 @@
 | 과제 | `assignment` | `#F2CC60` |
 | 면접 | `interview` | `#56D364` |
 | 오퍼 | `offer` | `#3FB950` |
-| 탈락 | `rejected` | `#F85149` |
+| 서류탈락 | `rejected-docs` | `#F85149` |
+| 과제탈락 | `rejected-assignment` | `#FF7B72` |
+| 면접탈락 | `rejected-interview` | `#C93C37` |
 | 보류·마감 | `hold` | `#6E7681` |
 
 Status chips: `color` at full hex, `background` at 14% alpha of the same hex, 1px border at 35% alpha. No filled solid chips.
@@ -95,7 +97,7 @@ Almost none. `transition: background 120ms, border-color 120ms` on rows/chips. N
 
 - SSOT = `applications.json` in the private data repo. The app never holds divergent state past one optimistic update.
 - Every mutation = one git commit, message `status: {company} {role} {from}→{to} (board:{user})`. History stays in git; the app does not reimplement audit logs.
-- Status vocabulary is closed (8 keys above). career-ops mapping: Evaluada→ready, Aplicado→submitted, Entrevista→interview, Oferta→offer, Rechazada→rejected, Descartada→hold.
+- Status vocabulary is closed (10 keys above). career-ops mapping: Evaluada→ready, Aplicado→submitted, Entrevista→interview, Oferta→offer, Rechazada→rejected-docs (default; refine by stage when known), Descartada→hold.
 
 ## 9. Do / Don't
 

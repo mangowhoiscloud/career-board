@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { commitBoard, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, whoami } from './api'
+import { commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, whoami } from './api'
 import type { Application, BoardData, Status } from './types'
 import { STATUS_COLOR, STATUS_LABEL, STATUS_ORDER } from './types'
 
@@ -266,11 +266,57 @@ export default function App() {
   const [query, setQuery] = useState('')
   const [menuFor, setMenuFor] = useState<string | null>(null)
   const [openId, setOpenId] = useState<string | null>(null)
+  const [composer, setComposer] = useState(false)
+  const [reqType, setReqType] = useState('package')
+  const [reqUrl, setReqUrl] = useState('')
+  const [reqNote, setReqNote] = useState('')
+  const [reqBusy, setReqBusy] = useState(false)
 
   const showToast = useCallback((t: Toast) => {
     setToast(t)
     if (t) window.setTimeout(() => setToast(null), 4000)
   }, [])
+
+  const submitRequest = useCallback(async () => {
+    if (!token || !reqUrl.trim()) return
+    setReqBusy(true)
+    const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12)
+    const typeLabel: Record<string, string> = {
+      package: '지원 패키지 제작 (이력서+커버레터)',
+      coverletter: '커버레터/지원동기 작성',
+      research: '회사·JD 리서치',
+      submit: '제출 보조 (폼 입력안 작성)',
+    }
+    const body = [
+      `# REQ-${ts} · ${typeLabel[reqType]}`,
+      '',
+      `- type: ${reqType}`,
+      `- url: ${reqUrl.trim()}`,
+      `- requested-by: board:${user}`,
+      `- requested-at: ${new Date().toISOString()}`,
+      `- status: pending`,
+      '',
+      '## 메모',
+      '',
+      reqNote.trim() || '(없음)',
+      '',
+      '> 처리 규약: 로컬 Claude Code 세션(구독 쿼터)이 requests/ 를 확인하고 resume-production 파이프라인으로 처리한다.',
+      '> 완료 시 status: done 으로 수정하고 산출물 경로를 기재한다.',
+      '',
+    ].join('\n')
+    try {
+      await createFile(token, `requests/REQ-${ts}.md`, body, `request: ${typeLabel[reqType]} (board:${user})`)
+      showToast({ kind: 'ok', text: `요청 등록됨 · REQ-${ts}` })
+      setComposer(false)
+      setReqUrl('')
+      setReqNote('')
+    } catch (e) {
+      showToast({ kind: 'err', text: e instanceof Error ? e.message : '요청 실패' })
+    } finally {
+      setReqBusy(false)
+    }
+  }, [token, reqType, reqUrl, reqNote, user, showToast])
+
 
   const load = useCallback(async (tok: string) => {
     setLoading(true)
@@ -312,6 +358,10 @@ export default function App() {
             ? {
                 ...a,
                 status: next,
+                submitted:
+                  next === 'submitted' && !a.submitted
+                    ? new Date().toISOString().slice(0, 10)
+                    : a.submitted,
                 history: [
                   ...(a.history ?? []),
                   { at: new Date().toISOString(), from: a.status, to: next, by: `board:${user}` },
@@ -330,7 +380,13 @@ export default function App() {
           `status: ${app.company} ${app.role} ${app.status}→${next} (board:${user})`,
         )
         setSha(newSha)
-        showToast({ kind: 'ok', text: `${app.company} → ${STATUS_LABEL[next]}` })
+        showToast({
+          kind: 'ok',
+          text:
+            next === 'submitted' && !app.submitted
+              ? `${app.company} 제출 확인 · ${new Date().toISOString().slice(0, 10)} 기록`
+              : `${app.company} → ${STATUS_LABEL[next]}`,
+        })
       } catch (e) {
         setBoard(prev)
         setSha(prevSha)
@@ -345,14 +401,15 @@ export default function App() {
   const stats = useMemo(() => {
     const by = (s: Status) => apps.filter((a) => a.status === s).length
     const inProgress = by('screening') + by('assignment') + by('interview')
+    const rejected = by('rejected-docs') + by('rejected-assignment') + by('rejected-interview')
     const submittedTotal = apps.length - by('ready')
-    const responded = inProgress + by('offer') + by('rejected')
+    const responded = inProgress + by('offer') + rejected
     return {
       total: apps.length,
       ready: by('ready'),
       waiting: by('submitted'),
       inProgress,
-      rejected: by('rejected'),
+      rejected,
       rate: submittedTotal ? Math.round((responded / submittedTotal) * 100) : 0,
     }
   }, [apps])
@@ -459,7 +516,55 @@ export default function App() {
           aria-label="검색"
           spellCheck={false}
         />
+        <button type="button" className="compose-btn" onClick={() => setComposer(true)}>
+          + 에이전트 요청
+        </button>
       </section>
+
+      {composer && (
+        <>
+          <div className="drawer-backdrop" onClick={() => setComposer(false)} aria-hidden="true" />
+          <aside className="drawer" role="dialog" aria-modal="true" aria-label="에이전트 작업 요청">
+            <header className="drawer-head">
+              <div>
+                <h2>에이전트 작업 요청</h2>
+                <p className="drawer-role">requests/ 에 커밋되어 로컬 Claude Code 세션(구독 쿼터)이 처리합니다</p>
+              </div>
+              <button type="button" className="drawer-close" onClick={() => setComposer(false)} aria-label="닫기">
+                ✕
+              </button>
+            </header>
+            <div className="compose-form">
+              <label>
+                유형
+                <select value={reqType} onChange={(e) => setReqType(e.target.value)}>
+                  <option value="package">지원 패키지 제작 (이력서+커버레터)</option>
+                  <option value="coverletter">커버레터·지원동기 작성</option>
+                  <option value="research">회사·JD 리서치</option>
+                  <option value="submit">제출 보조 (폼 입력안)</option>
+                </select>
+              </label>
+              <label>
+                공고 URL
+                <input
+                  type="url"
+                  value={reqUrl}
+                  onChange={(e) => setReqUrl(e.target.value)}
+                  placeholder="https://…"
+                  spellCheck={false}
+                />
+              </label>
+              <label>
+                메모
+                <textarea value={reqNote} onChange={(e) => setReqNote(e.target.value)} rows={4} placeholder="강조 축, 마감일 등…" />
+              </label>
+              <button type="button" className="compose-submit" disabled={reqBusy || !reqUrl.trim()} onClick={() => void submitRequest()}>
+                {reqBusy ? '등록 중…' : '요청 등록'}
+              </button>
+            </div>
+          </aside>
+        </>
+      )}
 
       <div className="list" role="table" aria-label="지원 목록">
         {groups.map(([wave, rows]) => (
@@ -479,7 +584,21 @@ export default function App() {
                 }}
               >
                 <div className="cell-main">
-                  <span className="company">{a.company}</span>
+                  <span className="company">
+                    {a.company}
+                    {a.url && (
+                      <a
+                        className="jd-link"
+                        href={a.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label={`${a.company} 공고 열기`}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        ↗
+                      </a>
+                    )}
+                  </span>
                   <span className="role">{a.role}</span>
                 </div>
                 <span className="cell-years">{a.yearsReq ?? ''}</span>

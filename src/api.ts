@@ -64,6 +64,20 @@ export async function commitBoard(
   return json.content.sha as string
 }
 
+export async function createFile(
+  token: string,
+  path: string,
+  content: string,
+  message: string,
+): Promise<void> {
+  const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${encodeURI(path)}`, {
+    method: 'PUT',
+    headers: { ...headers(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, content: b64encodeUtf8(content) }),
+  })
+  if (!res.ok) throw new Error(`요청 생성 실패 (${res.status})`)
+}
+
 export async function fetchDocBlobUrl(token: string, path: string): Promise<string> {
   const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${encodeURI(path)}`, {
     headers: headers(token),
