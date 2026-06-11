@@ -404,6 +404,10 @@ button {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+.cell-years {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .cell-channel {
   font-size: 11px;
   font-family: var(--mono);
