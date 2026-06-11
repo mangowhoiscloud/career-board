@@ -291,11 +291,9 @@ function Sankey({ apps }: { apps: Application[] }) {
               <g key={`${ci}-${ni}`}>
                 <rect x={cols[ci].x} y={n.y} width={NODE_W} height={n.h} rx="1.5" fill={n.color} />
                 <text
-                  x={ci === 0 ? cols[ci].x : cols[ci].x + NODE_W + 7}
+                  x={cols[ci].x + NODE_W + 7}
                   y={n.y + Math.min(n.h / 2, 14) + 3.5}
                   className="sankey-label"
-                  textAnchor={ci === 0 ? 'start' : 'start'}
-                  transform={ci === 0 ? `translate(0, ${n.h + 14 > H ? 0 : n.h + 6})` : undefined}
                 >
                   {n.label} {n.count}
                 </text>
