@@ -4,6 +4,22 @@ import type { Application, BoardData, Status } from './types'
 import { STATUS_COLOR, STATUS_LABEL, STATUS_ORDER } from './types'
 
 const TOKEN_KEY = 'career-board:token'
+
+function channelLabel(url?: string, channel?: string): string {
+  if (channel) return channel
+  if (!url) return ''
+  try {
+    const h = new URL(url).hostname
+    if (h.includes('ashbyhq')) return 'ashby'
+    if (h.includes('greenhouse')) return 'greenhouse'
+    if (h.includes('lever')) return 'lever'
+    if (h.includes('wanted')) return 'wanted'
+    if (h.includes('greetinghr')) return 'greeting'
+    return h.replace(/^www\./, '').split('.').slice(0, 2).join('.')
+  } catch {
+    return ''
+  }
+}
 type Toast = { kind: 'ok' | 'err'; text: string } | null
 
 /* ── 상태 표시: 도트 + 텍스트 ── */
@@ -170,7 +186,7 @@ function Drawer({
               <dt>공고</dt>
               <dd>
                 <a href={app.url} target="_blank" rel="noreferrer">
-                  JD 열기 ↗
+                  {channelLabel(app.url, app.channel)}에서 보기
                 </a>
               </dd>
             </div>
@@ -189,7 +205,7 @@ function Drawer({
                 disabled={opening === d.path}
               >
                 <span className="doc-label">{d.label}</span>
-                <span className="doc-open mono">{opening === d.path ? '여는 중…' : '열기 ↗'}</span>
+                <span className="doc-open">{opening === d.path ? '여는 중…' : '보기'}</span>
               </button>
             ))}
           </section>
@@ -222,7 +238,7 @@ function TokenGate({ onSubmit, error }: { onSubmit: (t: string) => void; error: 
   const [value, setValue] = useState('')
   return (
     <main className="gate">
-      <h1>Career Board</h1>
+      <h1 className="wordmark">career<span className="wordmark-dot">.</span>board</h1>
       <p className="gate-sub">
         지원 현황 데이터는 비공개 저장소에 있습니다. fine-grained PAT(career-data, Contents
         read/write)로 인증하세요. 토큰은 이 브라우저의 localStorage에만 저장됩니다.
@@ -445,8 +461,12 @@ export default function App() {
   return (
     <main className="board">
       <header className="topbar">
-        <h1>Career Board</h1>
+        <h1 className="wordmark">career<span className="wordmark-dot">.</span>board</h1>
         <div className="topbar-right mono">
+          <button type="button" className="topbar-action" onClick={() => setComposer(true)}>
+            에이전트 요청
+          </button>
+          <span className="sep">·</span>
           <span>{user}</span>
           <span className="sep">·</span>
           <span>updated {board.updated}</span>
@@ -516,9 +536,6 @@ export default function App() {
           aria-label="검색"
           spellCheck={false}
         />
-        <button type="button" className="compose-btn" onClick={() => setComposer(true)}>
-          + 에이전트 요청
-        </button>
       </section>
 
       {composer && (
@@ -567,6 +584,15 @@ export default function App() {
       )}
 
       <div className="list" role="table" aria-label="지원 목록">
+        <div className="row head" role="row" aria-hidden="true">
+          <span>회사 · 포지션</span>
+          <span>연차</span>
+          <span>공고</span>
+          <span className="ta-r">제출일</span>
+          <span className="ta-r">문서</span>
+          <span>상태</span>
+          <span>메모</span>
+        </div>
         {groups.map(([wave, rows]) => (
           <section key={wave} className="wave-group">
             <h2 className="wave-head mono">
@@ -577,33 +603,28 @@ export default function App() {
                 key={a.id}
                 role="row"
                 tabIndex={0}
-                className="row"
+                className={`row ${a.status.startsWith('rejected') || a.status === 'hold' ? 'dim' : ''}`}
                 onClick={() => setOpenId(a.id)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') setOpenId(a.id)
                 }}
               >
                 <div className="cell-main">
-                  <span className="company">
-                    {a.company}
-                    {a.url && (
-                      <a
-                        className="jd-link"
-                        href={a.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        aria-label={`${a.company} 공고 열기`}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        ↗
-                      </a>
-                    )}
-                  </span>
+                  <span className="company">{a.company}</span>
                   <span className="role">{a.role}</span>
                 </div>
                 <span className="cell-years">{a.yearsReq ?? ''}</span>
+                <span className="cell-channel">
+                  {a.url ? (
+                    <a href={a.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+                      {channelLabel(a.url, a.channel)}
+                    </a>
+                  ) : (
+                    channelLabel(a.url, a.channel)
+                  )}
+                </span>
                 <span className="cell-date mono">{a.submitted ?? ''}</span>
-                <span className="cell-docs mono">{a.docs?.length ? `${a.docs.length} docs` : ''}</span>
+                <span className="cell-docs mono ta-r">{a.docs?.length ?? ''}</span>
                 <span className="cell-status" onClick={(e) => e.stopPropagation()}>
                   <StatusDot status={a.status} asButton onClick={() => setMenuFor(menuFor === a.id ? null : a.id)} />
                   {menuFor === a.id && (

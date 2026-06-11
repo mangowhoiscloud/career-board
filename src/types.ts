@@ -24,16 +24,16 @@ export const STATUS_LABEL: Record<Status, string> = {
 }
 
 export const STATUS_COLOR: Record<Status, string> = {
-  ready: '#8B949E',
-  submitted: '#58A6FF',
-  screening: '#BC8CFF',
-  assignment: '#F2CC60',
-  interview: '#56D364',
-  offer: '#3FB950',
-  'rejected-docs': '#F85149',
-  'rejected-assignment': '#FF7B72',
-  'rejected-interview': '#C93C37',
-  hold: '#6E7681',
+  ready: '#6b6b72',
+  submitted: '#c9c9cf',
+  screening: '#e9c46a',
+  assignment: '#e8a33d',
+  interview: '#f08c00',
+  offer: '#46c68a',
+  'rejected-docs': '#a04a45',
+  'rejected-assignment': '#b45a50',
+  'rejected-interview': '#7e3b38',
+  hold: '#515158',
 }
 
 export const STATUS_ORDER: Status[] = [
