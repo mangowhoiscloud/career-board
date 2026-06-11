@@ -85,7 +85,7 @@ function useDialog(onClose: () => void) {
 function StatusDot({ status, asButton, onClick }: { status: Status; asButton?: boolean; onClick?: () => void }) {
   const c = STATUS_COLOR[status]
   const tone = statusTone(status)
-  const textColor = tone === 'active' ? 'var(--text)' : tone === 'closed' ? c : 'var(--text-3)'
+  const textColor = tone === 'active' ? 'var(--text)' : tone === 'closed' ? '#c9655c' : 'var(--text-3)'
   const inner = (
     <>
       <span className="dot" style={{ background: c }} aria-hidden="true" />
@@ -720,7 +720,7 @@ export default function App() {
             <strong className="num-rejected">{stats.rejected}</strong> 탈락
           </span>
           <span>
-            <strong>{stats.rate}%</strong> 응답률
+            <strong>{stats.rate}<span className="unit">%</span></strong> 응답률
           </span>
           {filtered && (
             <span className="metrics-filtered" aria-live="polite">
@@ -847,7 +847,7 @@ export default function App() {
                   )}
                 </span>
                 <span role="cell" className="cell-notes">
-                  {a.notes ?? ''}
+                  {a.notes ?? '–'}
                 </span>
               </div>
             ))}
