@@ -64,6 +64,22 @@ export async function commitBoard(
   return json.content.sha as string
 }
 
+export async function fetchDocBlobUrl(token: string, path: string): Promise<string> {
+  const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${encodeURI(path)}`, {
+    headers: headers(token),
+  })
+  if (!res.ok) throw new Error(`문서 로드 실패 (${res.status})`)
+  const json = await res.json()
+  const bin = atob((json.content as string).replace(/\n/g, ''))
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
+  const mime = path.endsWith('.html')
+    ? 'text/html'
+    : path.endsWith('.pdf')
+      ? 'application/pdf'
+      : 'text/plain;charset=utf-8'
+  return URL.createObjectURL(new Blob([bytes], { type: mime }))
+}
+
 export async function whoami(token: string): Promise<string> {
   const res = await fetch('https://api.github.com/user', { headers: headers(token) })
   if (!res.ok) return 'unknown'

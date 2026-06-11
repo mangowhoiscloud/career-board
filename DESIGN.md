@@ -71,12 +71,14 @@ Numerals/dates/IDs use `ui-monospace, 'SF Mono', Menlo, monospace`.
 
 ## 5. Components
 
-- **StatStrip**: total / active(준비+제출+진행) / 진행(서류통과·과제·면접) / 탈락 / 응답률. Numbers mono, label below.
-- **FilterBar**: status chip toggles (multi), free-text search (company·role), wave select. Active filter = accent border.
-- **Row**: `# · 회사 · 포지션 · 연차요건 · 채널 · 제출일 · 상태칩 · 메모`. Company links to JD url when present.
-- **StatusMenu**: click chip → small menu of 8 statuses → optimistic update → commit via API. On failure, revert + toast.
-- **TokenGate**: first-run screen asking for a fine-grained PAT; explains scope (career-data, Contents RW). Token in `localStorage` only. A "에이전트는 git으로 직접 커밋" hint links to the data repo.
-- **Toast**: bottom-right, single line, auto-dismiss 4s. Error = red border, success = green border.
+- **FunnelBar**: 4px stacked distribution bar under the title — the whole funnel in one glance. Status colors only, 2px gaps.
+- **Metrics**: inline number row (`17px mono bold` + `12px` label), hairline-bottom. NOT cards — no borders around individual numbers.
+- **FilterBar**: text toggles with 7px status dot; active = text bright + 1px accent underline. Search = borderless input with hairline underline, `margin-left auto`.
+- **List**: wave-grouped rows (sticky-feel headers `W5 6`). Row grid: 회사/포지션(2줄) · 연차 · 제출일 · docs n · 상태(도트+텍스트) · 메모. Hairline separators only; hover = surface bg. Row click/Enter → Drawer.
+- **StatusDot**: 8px colored dot + text. The trigger variant gets a 14%-alpha hover bg; non-interactive renders bare.
+- **StatusMenu**: floating menu (the one allowed shadow), dot+label per item.
+- **Drawer**: right panel 400px, hairline left border, backdrop. Sections: meta(dl) → 제출 문서(doc rows, fetch→Blob→new tab) → 메모 → 이력(mono). Esc/backdrop close, `role="dialog"`.
+- **TokenGate / Toast**: unchanged from v1; toast `aria-live="polite"`.
 
 ## 6. Motion
 

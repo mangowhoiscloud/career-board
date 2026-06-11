@@ -48,6 +48,11 @@ export interface HistoryEntry {
   by: string
 }
 
+export interface DocRef {
+  label: string
+  path: string
+}
+
 export interface Application {
   id: string
   company: string
@@ -59,6 +64,7 @@ export interface Application {
   submitted?: string | null
   status: Status
   notes?: string
+  docs?: DocRef[]
   history?: HistoryEntry[]
 }
 
