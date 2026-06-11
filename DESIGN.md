@@ -1,4 +1,4 @@
-# DESIGN.md — Career Board (operator dashboard)
+# DESIGN.md — mango.career (operator dashboard)
 
 > Google Stitch DESIGN.md format — 9 sections. AI agents read this before writing UI for this codebase.
 > Audience: mango (operator) + authorized agents. A private ops dashboard, read at a monitor, often at night.
@@ -50,7 +50,7 @@ sans: 'IBM Plex Sans KR', 'Apple SD Gothic Neo', sans-serif   (400/500/600)
 mono: 'IBM Plex Mono', ui-monospace, monospace                 (400/500/600)
 ```
 
-mono의 역할: 워드마크(`career.board`, 앰버 마침표), 라인 넘버, 날짜·수치(tabular-nums), 컬럼 헤더, wave 헤더, 채널명, 드로어 섹션 라벨(uppercase tracking 0.1em). 본문·회사명·메모는 sans. **사이즈는 13/12/11/10.5px 4단으로 끝** — 큰 숫자 히어로(stat 카드) 금지.
+mono의 역할: 워드마크(`mango.career`, 앰버 마침표), 라인 넘버, 날짜·수치(tabular-nums), 컬럼 헤더, wave 헤더, 채널명, 드로어 섹션 라벨(uppercase tracking 0.1em). 본문·회사명·메모는 sans. **사이즈는 13/12/11/10.5px 4단으로 끝** — 큰 숫자 히어로(stat 카드) 금지.
 
 ## 4. Spacing & Layout Grid
 

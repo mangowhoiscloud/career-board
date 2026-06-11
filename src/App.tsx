@@ -238,7 +238,7 @@ function TokenGate({ onSubmit, error }: { onSubmit: (t: string) => void; error: 
   const [value, setValue] = useState('')
   return (
     <main className="gate">
-      <h1 className="wordmark">career<span className="wordmark-dot">.</span>board</h1>
+      <h1 className="wordmark">mango<span className="wordmark-dot">.</span>career</h1>
       <p className="gate-sub">
         지원 현황 데이터는 비공개 저장소에 있습니다. fine-grained PAT(career-data, Contents
         read/write)로 인증하세요. 토큰은 이 브라우저의 localStorage에만 저장됩니다.
@@ -461,7 +461,7 @@ export default function App() {
   return (
     <main className="board">
       <header className="topbar">
-        <h1 className="wordmark">career<span className="wordmark-dot">.</span>board</h1>
+        <h1 className="wordmark">mango<span className="wordmark-dot">.</span>career</h1>
         <div className="topbar-right mono">
           <button type="button" className="topbar-action" onClick={() => setComposer(true)}>
             에이전트 요청
