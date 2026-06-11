@@ -4,31 +4,92 @@ import type { Application, BoardData, Status } from './types'
 import { STATUS_COLOR, STATUS_LABEL, STATUS_ORDER } from './types'
 
 const TOKEN_KEY = 'career-board:token'
+type Toast = { kind: 'ok' | 'err'; text: string } | null
+
+const BOARD_SLUGS: Array<[string, string]> = [
+  ['ashbyhq', 'ashby'],
+  ['greenhouse', 'greenhouse'],
+  ['lever', 'lever'],
+  ['wanted', 'wanted'],
+  ['greetinghr', 'greeting'],
+  ['recruiter.co.kr', 'recruiter'],
+]
 
 function channelLabel(url?: string, channel?: string): string {
   if (channel) return channel
   if (!url) return ''
   try {
     const h = new URL(url).hostname
-    if (h.includes('ashbyhq')) return 'ashby'
-    if (h.includes('greenhouse')) return 'greenhouse'
-    if (h.includes('lever')) return 'lever'
-    if (h.includes('wanted')) return 'wanted'
-    if (h.includes('greetinghr')) return 'greeting'
-    return h.replace(/^www\./, '').split('.').slice(0, 2).join('.')
+    for (const [k, v] of BOARD_SLUGS) if (h.includes(k)) return v
+    const parts = h.replace(/^www\./, '').split('.')
+    const slug = parts[0] === 'careers' || parts[0] === 'career' || parts[0] === 'jobs' || parts[0] === 'job-boards' ? parts[1] : parts[0]
+    return (slug ?? '').slice(0, 12)
   } catch {
     return ''
   }
 }
-type Toast = { kind: 'ok' | 'err'; text: string } | null
 
-/* ── 상태 표시: 도트 + 텍스트 ── */
+function todayLocal(): string {
+  return new Intl.DateTimeFormat('sv-SE').format(new Date())
+}
+
+function fmtHistoryAt(iso: string): string {
+  return new Date(iso).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' })
+}
+
+function statusTone(s: Status): 'muted' | 'active' | 'closed' {
+  if (s === 'ready' || s === 'submitted' || s === 'hold') return 'muted'
+  if (s.startsWith('rejected')) return 'closed'
+  return 'active'
+}
+
+/* 다이얼로그 공통: 포커스 이동·복원·Esc·스크롤 락·탭 트랩 */
+function useDialog(onClose: () => void) {
+  const ref = useRef<HTMLElement>(null)
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null
+    const node = ref.current
+    node?.focus()
+    document.body.style.overflow = 'hidden'
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose()
+        return
+      }
+      if (e.key === 'Tab' && node) {
+        const items = node.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        )
+        if (items.length === 0) return
+        const first = items[0]
+        const last = items[items.length - 1]
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault()
+          last.focus()
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault()
+          first.focus()
+        }
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = ''
+      prev?.focus()
+    }
+  }, [onClose])
+  return ref
+}
+
 function StatusDot({ status, asButton, onClick }: { status: Status; asButton?: boolean; onClick?: () => void }) {
   const c = STATUS_COLOR[status]
+  const tone = statusTone(status)
+  const textColor = tone === 'active' ? 'var(--text)' : tone === 'closed' ? c : 'var(--text-3)'
   const inner = (
     <>
       <span className="dot" style={{ background: c }} aria-hidden="true" />
-      {STATUS_LABEL[status]}
+      <span style={{ color: textColor }}>{STATUS_LABEL[status]}</span>
     </>
   )
   if (!asButton) return <span className="status">{inner}</span>
@@ -47,20 +108,43 @@ function StatusDot({ status, asButton, onClick }: { status: Status; asButton?: b
   )
 }
 
-function StatusMenu({ current, onPick, onClose }: { current: Status; onPick: (s: Status) => void; onClose: () => void }) {
+function StatusMenu({
+  current,
+  up,
+  onPick,
+  onClose,
+}: {
+  current: Status
+  up?: boolean
+  onPick: (s: Status) => void
+  onClose: () => void
+}) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
+    ref.current?.querySelector('button')?.focus()
     const onDoc = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && onClose()
-    const onEsc = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        onClose()
+      }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        const items = [...(ref.current?.querySelectorAll('button') ?? [])]
+        const i = items.indexOf(document.activeElement as HTMLButtonElement)
+        const next = e.key === 'ArrowDown' ? (i + 1) % items.length : (i - 1 + items.length) % items.length
+        items[next]?.focus()
+      }
+    }
     document.addEventListener('mousedown', onDoc)
-    document.addEventListener('keydown', onEsc)
+    document.addEventListener('keydown', onKey, true)
     return () => {
       document.removeEventListener('mousedown', onDoc)
-      document.removeEventListener('keydown', onEsc)
+      document.removeEventListener('keydown', onKey, true)
     }
   }, [onClose])
   return (
-    <div className="status-menu" ref={ref} role="menu">
+    <div className={`status-menu ${up ? 'up' : ''}`} ref={ref} role="menu">
       {STATUS_ORDER.map((s) => (
         <button
           key={s}
@@ -80,7 +164,6 @@ function StatusMenu({ current, onPick, onClose }: { current: Status; onPick: (s:
   )
 }
 
-/* ── 퍼널 분포 바 ── */
 function FunnelBar({ apps }: { apps: Application[] }) {
   const total = apps.length || 1
   return (
@@ -100,7 +183,6 @@ function FunnelBar({ apps }: { apps: Application[] }) {
   )
 }
 
-/* ── 상세 드로어 ── */
 function Drawer({
   app,
   token,
@@ -116,11 +198,7 @@ function Drawer({
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [opening, setOpening] = useState<string | null>(null)
-  useEffect(() => {
-    const onEsc = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
-    document.addEventListener('keydown', onEsc)
-    return () => document.removeEventListener('keydown', onEsc)
-  }, [onClose])
+  const ref = useDialog(onClose)
 
   const openDoc = async (path: string) => {
     setOpening(path)
@@ -137,14 +215,21 @@ function Drawer({
   return (
     <>
       <div className="drawer-backdrop" onClick={onClose} aria-hidden="true" />
-      <aside className="drawer" role="dialog" aria-modal="true" aria-label={`${app.company} 상세`}>
+      <aside
+        className="drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${app.company} 상세`}
+        ref={ref as React.RefObject<HTMLElement>}
+        tabIndex={-1}
+      >
         <header className="drawer-head">
           <div>
             <h2>{app.company}</h2>
             <p className="drawer-role">{app.role}</p>
           </div>
-          <button type="button" className="drawer-close" onClick={onClose} aria-label="닫기">
-            ✕
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="닫기 (Esc)">
+            esc
           </button>
         </header>
 
@@ -223,7 +308,7 @@ function Drawer({
             <h3>이력</h3>
             {[...app.history].reverse().map((h, i) => (
               <p key={i} className="mono">
-                {h.at.slice(0, 16).replace('T', ' ')} · {h.from ? `${STATUS_LABEL[h.from]} → ` : ''}
+                {fmtHistoryAt(h.at)} · {h.from ? `${STATUS_LABEL[h.from]} → ` : ''}
                 {STATUS_LABEL[h.to]} · {h.by}
               </p>
             ))}
@@ -238,7 +323,9 @@ function TokenGate({ onSubmit, error }: { onSubmit: (t: string) => void; error: 
   const [value, setValue] = useState('')
   return (
     <main className="gate">
-      <h1 className="wordmark">mango<span className="wordmark-dot">.</span>career</h1>
+      <h1 className="wordmark">
+        mango<span className="wordmark-dot">.</span>career
+      </h1>
       <p className="gate-sub">
         지원 현황 데이터는 비공개 저장소에 있습니다. fine-grained PAT(career-data, Contents
         read/write)로 인증하세요. 토큰은 이 브라우저의 localStorage에만 저장됩니다.
@@ -251,6 +338,7 @@ function TokenGate({ onSubmit, error }: { onSubmit: (t: string) => void; error: 
       >
         <input
           type="password"
+          name="token"
           value={value}
           onChange={(e) => setValue(e.target.value)}
           placeholder="github_pat_…"
@@ -261,7 +349,11 @@ function TokenGate({ onSubmit, error }: { onSubmit: (t: string) => void; error: 
         />
         <button type="submit">접속</button>
       </form>
-      {error && <p className="gate-error" aria-live="polite">{error}</p>}
+      {error && (
+        <p className="gate-error" aria-live="polite">
+          {error}
+        </p>
+      )}
       <p className="gate-hint">
         에이전트는 보드를 거치지 않고 <a href={DATA_REPO_URL}>career-data</a>의{' '}
         <code>data/applications.json</code>을 git으로 직접 커밋합니다.
@@ -270,38 +362,32 @@ function TokenGate({ onSubmit, error }: { onSubmit: (t: string) => void; error: 
   )
 }
 
-export default function App() {
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY))
-  const [board, setBoard] = useState<BoardData | null>(null)
-  const [sha, setSha] = useState('')
-  const [user, setUser] = useState('')
-  const [gateError, setGateError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [toast, setToast] = useState<Toast>(null)
-  const [statusFilter, setStatusFilter] = useState<Set<Status>>(new Set())
-  const [query, setQuery] = useState('')
-  const [menuFor, setMenuFor] = useState<string | null>(null)
-  const [openId, setOpenId] = useState<string | null>(null)
-  const [composer, setComposer] = useState(false)
+function Composer({
+  user,
+  token,
+  onClose,
+  toast,
+}: {
+  user: string
+  token: string
+  onClose: () => void
+  toast: (t: Toast) => void
+}) {
   const [reqType, setReqType] = useState('package')
   const [reqUrl, setReqUrl] = useState('')
   const [reqNote, setReqNote] = useState('')
-  const [reqBusy, setReqBusy] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const ref = useDialog(onClose)
 
-  const showToast = useCallback((t: Toast) => {
-    setToast(t)
-    if (t) window.setTimeout(() => setToast(null), 4000)
-  }, [])
-
-  const submitRequest = useCallback(async () => {
-    if (!token || !reqUrl.trim()) return
-    setReqBusy(true)
+  const submit = async () => {
+    if (!reqUrl.trim()) return
+    setBusy(true)
     const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12)
     const typeLabel: Record<string, string> = {
       package: '지원 패키지 제작 (이력서+커버레터)',
-      coverletter: '커버레터/지원동기 작성',
+      coverletter: '커버레터·지원동기 작성',
       research: '회사·JD 리서치',
-      submit: '제출 보조 (폼 입력안 작성)',
+      submit: '제출 보조 (폼 입력안)',
     }
     const body = [
       `# REQ-${ts} · ${typeLabel[reqType]}`,
@@ -322,17 +408,114 @@ export default function App() {
     ].join('\n')
     try {
       await createFile(token, `requests/REQ-${ts}.md`, body, `request: ${typeLabel[reqType]} (board:${user})`)
-      showToast({ kind: 'ok', text: `요청 등록됨 · REQ-${ts}` })
-      setComposer(false)
-      setReqUrl('')
-      setReqNote('')
+      toast({ kind: 'ok', text: `요청 등록됨 · REQ-${ts}` })
+      onClose()
     } catch (e) {
-      showToast({ kind: 'err', text: e instanceof Error ? e.message : '요청 실패' })
+      toast({ kind: 'err', text: e instanceof Error ? e.message : '요청 실패' })
     } finally {
-      setReqBusy(false)
+      setBusy(false)
     }
-  }, [token, reqType, reqUrl, reqNote, user, showToast])
+  }
 
+  return (
+    <>
+      <div className="drawer-backdrop" onClick={onClose} aria-hidden="true" />
+      <aside
+        className="drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label="에이전트 작업 요청"
+        ref={ref as React.RefObject<HTMLElement>}
+        tabIndex={-1}
+      >
+        <header className="drawer-head">
+          <div>
+            <h2>에이전트 작업 요청</h2>
+            <p className="drawer-role">requests/ 에 커밋되어 로컬 Claude Code 세션(구독 쿼터)이 처리합니다</p>
+          </div>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="닫기 (Esc)">
+            esc
+          </button>
+        </header>
+        <form
+          className="compose-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void submit()
+          }}
+        >
+          <label>
+            유형
+            <select name="type" value={reqType} onChange={(e) => setReqType(e.target.value)}>
+              <option value="package">지원 패키지 제작 (이력서+커버레터)</option>
+              <option value="coverletter">커버레터·지원동기 작성</option>
+              <option value="research">회사·JD 리서치</option>
+              <option value="submit">제출 보조 (폼 입력안)</option>
+            </select>
+          </label>
+          <label>
+            공고 URL
+            <input
+              type="url"
+              name="url"
+              value={reqUrl}
+              onChange={(e) => setReqUrl(e.target.value)}
+              placeholder="https://…"
+              spellCheck={false}
+            />
+          </label>
+          <label>
+            메모
+            <textarea
+              name="note"
+              value={reqNote}
+              onChange={(e) => setReqNote(e.target.value)}
+              rows={4}
+              placeholder="강조 축, 마감일 등…"
+            />
+          </label>
+          <button type="submit" className="compose-submit" disabled={busy || !reqUrl.trim()}>
+            {busy ? '등록 중…' : '요청 등록'}
+          </button>
+        </form>
+      </aside>
+    </>
+  )
+}
+
+export default function App() {
+  const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY))
+  const [board, setBoard] = useState<BoardData | null>(null)
+  const [sha, setSha] = useState('')
+  const [user, setUser] = useState('')
+  const [gateError, setGateError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [toast, setToast] = useState<Toast>(null)
+  const [statusFilter, setStatusFilter] = useState<Set<Status>>(new Set())
+  const [query, setQuery] = useState('')
+  const [menuFor, setMenuFor] = useState<string | null>(null)
+  const [menuUp, setMenuUp] = useState(false)
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [composer, setComposer] = useState(false)
+  const toastTimer = useRef<number | undefined>(undefined)
+  const searchRef = useRef<HTMLInputElement>(null)
+
+  const showToast = useCallback((t: Toast) => {
+    window.clearTimeout(toastTimer.current)
+    setToast(t)
+    if (t) toastTimer.current = window.setTimeout(() => setToast(null), t.kind === 'err' ? 8000 : 4000)
+  }, [])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        searchRef.current?.focus()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
 
   const load = useCallback(async (tok: string) => {
     setLoading(true)
@@ -366,18 +549,16 @@ export default function App() {
       }
       const prev = board
       const prevSha = sha
+      const stamped = next === 'submitted' && !app.submitted ? todayLocal() : app.submitted
       const updated: BoardData = {
         ...board,
-        updated: new Date().toISOString().slice(0, 10),
+        updated: todayLocal(),
         applications: board.applications.map((a) =>
           a.id === app.id
             ? {
                 ...a,
                 status: next,
-                submitted:
-                  next === 'submitted' && !a.submitted
-                    ? new Date().toISOString().slice(0, 10)
-                    : a.submitted,
+                submitted: stamped,
                 history: [
                   ...(a.history ?? []),
                   { at: new Date().toISOString(), from: a.status, to: next, by: `board:${user}` },
@@ -388,19 +569,40 @@ export default function App() {
       }
       setBoard(updated)
       setMenuFor(null)
+      const message = `status: ${app.company} ${app.role} ${app.status}→${next} (board:${user})`
       try {
-        const newSha = await commitBoard(
-          token,
-          updated,
-          prevSha,
-          `status: ${app.company} ${app.role} ${app.status}→${next} (board:${user})`,
-        )
+        let newSha: string
+        try {
+          newSha = await commitBoard(token, updated, prevSha, message)
+        } catch {
+          // 409 등: 최신 sha 재취득 후 1회 재시도 (낙관적 상태는 유지하되 서버 본문 기준 재구성)
+          const fresh = await fetchBoard(token)
+          const merged: BoardData = {
+            ...fresh.data,
+            updated: todayLocal(),
+            applications: fresh.data.applications.map((a) =>
+              a.id === app.id
+                ? {
+                    ...a,
+                    status: next,
+                    submitted: next === 'submitted' && !a.submitted ? todayLocal() : a.submitted,
+                    history: [
+                      ...(a.history ?? []),
+                      { at: new Date().toISOString(), from: a.status, to: next, by: `board:${user}` },
+                    ],
+                  }
+                : a,
+            ),
+          }
+          newSha = await commitBoard(token, merged, fresh.sha, message)
+          setBoard(merged)
+        }
         setSha(newSha)
         showToast({
           kind: 'ok',
           text:
             next === 'submitted' && !app.submitted
-              ? `${app.company} 제출 확인 · ${new Date().toISOString().slice(0, 10)} 기록`
+              ? `${app.company} 제출 확인 · ${todayLocal()} 기록`
               : `${app.company} → ${STATUS_LABEL[next]}`,
         })
       } catch (e) {
@@ -414,21 +616,26 @@ export default function App() {
 
   const apps = board?.applications ?? []
 
+  const counts = useMemo(() => {
+    const m = Object.fromEntries(STATUS_ORDER.map((s) => [s, 0])) as Record<Status, number>
+    for (const a of apps) m[a.status] += 1
+    return m
+  }, [apps])
+
   const stats = useMemo(() => {
-    const by = (s: Status) => apps.filter((a) => a.status === s).length
-    const inProgress = by('screening') + by('assignment') + by('interview')
-    const rejected = by('rejected-docs') + by('rejected-assignment') + by('rejected-interview')
-    const submittedTotal = apps.length - by('ready')
-    const responded = inProgress + by('offer') + rejected
+    const inProgress = counts.screening + counts.assignment + counts.interview
+    const rejected = counts['rejected-docs'] + counts['rejected-assignment'] + counts['rejected-interview']
+    const submittedTotal = apps.length - counts.ready
+    const responded = inProgress + counts.offer + rejected
     return {
       total: apps.length,
-      ready: by('ready'),
-      waiting: by('submitted'),
+      ready: counts.ready,
+      waiting: counts.submitted,
       inProgress,
       rejected,
       rate: submittedTotal ? Math.round((responded / submittedTotal) * 100) : 0,
     }
-  }, [apps])
+  }, [apps.length, counts])
 
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -443,10 +650,17 @@ export default function App() {
       list.push(a)
       byWave.set(a.wave, list)
     }
-    return [...byWave.entries()].sort((x, y) => y[0].localeCompare(x[0]))
+    return { groups: [...byWave.entries()].sort((x, y) => y[0].localeCompare(x[0])), visibleCount: visible.length }
   }, [apps, statusFilter, query])
 
   const openApp = openId ? apps.find((a) => a.id === openId) : null
+  const filtered = statusFilter.size > 0 || query.trim().length > 0
+
+  const openRowMenu = (id: string, e: React.MouseEvent) => {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    setMenuUp(window.innerHeight - rect.bottom < 320)
+    setMenuFor(menuFor === id ? null : id)
+  }
 
   if (!token || !board) {
     return loading ? (
@@ -461,7 +675,9 @@ export default function App() {
   return (
     <main className="board">
       <header className="topbar">
-        <h1 className="wordmark">mango<span className="wordmark-dot">.</span>career</h1>
+        <h1 className="wordmark">
+          mango<span className="wordmark-dot">.</span>career
+        </h1>
         <div className="topbar-right mono">
           <button type="button" className="topbar-action" onClick={() => setComposer(true)}>
             에이전트 요청
@@ -485,162 +701,173 @@ export default function App() {
         </div>
       </header>
 
-      <FunnelBar apps={apps} />
-
-      <section className="metrics" aria-label="요약">
-        <span>
-          <strong className="mono">{stats.total}</strong> 전체
-        </span>
-        <span>
-          <strong className="mono">{stats.ready}</strong> 준비
-        </span>
-        <span>
-          <strong className="mono">{stats.waiting}</strong> 응답 대기
-        </span>
-        <span>
-          <strong className="mono">{stats.inProgress}</strong> 진행 중
-        </span>
-        <span>
-          <strong className="mono">{stats.rejected}</strong> 탈락
-        </span>
-        <span>
-          <strong className="mono">{stats.rate}%</strong> 응답률
-        </span>
+      <section className="overview" aria-label="파이프라인 요약">
+        <FunnelBar apps={apps} />
+        <div className="metrics">
+          <span>
+            <strong>{stats.total}</strong> 전체
+          </span>
+          <span>
+            <strong>{stats.ready}</strong> 준비
+          </span>
+          <span>
+            <strong>{stats.waiting}</strong> 응답 대기
+          </span>
+          <span>
+            <strong>{stats.inProgress}</strong> 진행 중
+          </span>
+          <span>
+            <strong className="num-rejected">{stats.rejected}</strong> 탈락
+          </span>
+          <span>
+            <strong>{stats.rate}%</strong> 응답률
+          </span>
+          {filtered && (
+            <span className="metrics-filtered" aria-live="polite">
+              {groups.visibleCount}건 표시 중
+            </span>
+          )}
+        </div>
       </section>
 
       <section className="filters" aria-label="필터">
-        {STATUS_ORDER.map((s) => (
-          <button
-            key={s}
-            type="button"
-            className={`filter ${statusFilter.has(s) ? 'active' : ''}`}
-            aria-pressed={statusFilter.has(s)}
-            onClick={() =>
-              setStatusFilter((prev) => {
-                const next = new Set(prev)
-                next.has(s) ? next.delete(s) : next.add(s)
-                return next
-              })
-            }
-          >
-            <span className="dot" style={{ background: STATUS_COLOR[s] }} aria-hidden="true" />
-            {STATUS_LABEL[s]}
-          </button>
+        {STATUS_ORDER.map((s, i) => (
+          <span key={s} className="filter-slot">
+            {(i === 6 || i === 9) && <span className="filter-div" aria-hidden="true" />}
+            <button
+              type="button"
+              className={`filter ${statusFilter.has(s) ? 'active' : ''}`}
+              aria-pressed={statusFilter.has(s)}
+              onClick={() =>
+                setStatusFilter((prev) => {
+                  const next = new Set(prev)
+                  if (next.has(s)) next.delete(s)
+                  else next.add(s)
+                  return next
+                })
+              }
+            >
+              <span className="dot" style={{ background: STATUS_COLOR[s] }} aria-hidden="true" />
+              {STATUS_LABEL[s]}
+              <span className="filter-count mono">{counts[s]}</span>
+            </button>
+          </span>
         ))}
         <input
+          ref={searchRef}
           type="search"
           className="search"
-          placeholder="회사·포지션 검색…"
+          name="q"
+          placeholder="검색…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          aria-label="검색"
+          aria-label="회사·포지션 검색"
           spellCheck={false}
         />
+        <kbd className="search-kbd mono" aria-hidden="true">
+          ⌘K
+        </kbd>
       </section>
 
-      {composer && (
-        <>
-          <div className="drawer-backdrop" onClick={() => setComposer(false)} aria-hidden="true" />
-          <aside className="drawer" role="dialog" aria-modal="true" aria-label="에이전트 작업 요청">
-            <header className="drawer-head">
-              <div>
-                <h2>에이전트 작업 요청</h2>
-                <p className="drawer-role">requests/ 에 커밋되어 로컬 Claude Code 세션(구독 쿼터)이 처리합니다</p>
-              </div>
-              <button type="button" className="drawer-close" onClick={() => setComposer(false)} aria-label="닫기">
-                ✕
-              </button>
-            </header>
-            <div className="compose-form">
-              <label>
-                유형
-                <select value={reqType} onChange={(e) => setReqType(e.target.value)}>
-                  <option value="package">지원 패키지 제작 (이력서+커버레터)</option>
-                  <option value="coverletter">커버레터·지원동기 작성</option>
-                  <option value="research">회사·JD 리서치</option>
-                  <option value="submit">제출 보조 (폼 입력안)</option>
-                </select>
-              </label>
-              <label>
-                공고 URL
-                <input
-                  type="url"
-                  value={reqUrl}
-                  onChange={(e) => setReqUrl(e.target.value)}
-                  placeholder="https://…"
-                  spellCheck={false}
-                />
-              </label>
-              <label>
-                메모
-                <textarea value={reqNote} onChange={(e) => setReqNote(e.target.value)} rows={4} placeholder="강조 축, 마감일 등…" />
-              </label>
-              <button type="button" className="compose-submit" disabled={reqBusy || !reqUrl.trim()} onClick={() => void submitRequest()}>
-                {reqBusy ? '등록 중…' : '요청 등록'}
-              </button>
-            </div>
-          </aside>
-        </>
-      )}
-
       <div className="list" role="table" aria-label="지원 목록">
-        <div className="row head" role="row" aria-hidden="true">
-          <span>회사 · 포지션</span>
-          <span>연차</span>
-          <span>공고</span>
-          <span className="ta-r">제출일</span>
-          <span className="ta-r">문서</span>
-          <span>상태</span>
-          <span>메모</span>
+        <div className="row head" role="row">
+          <span role="columnheader" className="cell-num" aria-label="행 번호" />
+          <span role="columnheader">회사 · 포지션</span>
+          <span role="columnheader">연차</span>
+          <span role="columnheader">공고</span>
+          <span role="columnheader" className="ta-r">
+            제출일
+          </span>
+          <span role="columnheader" className="ta-r">
+            문서
+          </span>
+          <span role="columnheader">상태</span>
+          <span role="columnheader">메모</span>
         </div>
-        {groups.map(([wave, rows]) => (
-          <section key={wave} className="wave-group">
-            <h2 className="wave-head mono">
-              {wave} <span className="wave-count">{rows.length}</span>
+        {groups.groups.map(([wave, rows]) => (
+          <section key={wave} className="wave-group" role="rowgroup">
+            <h2 className="wave-head mono" aria-label={`${wave} 차수 ${rows.length}건`}>
+              {wave}
+              <span className="wave-count">{rows.length}건</span>
             </h2>
-            {rows.map((a) => (
+            {rows.map((a, i) => (
               <div
                 key={a.id}
                 role="row"
                 tabIndex={0}
-                className={`row ${a.status.startsWith('rejected') || a.status === 'hold' ? 'dim' : ''}`}
+                className="row"
                 onClick={() => setOpenId(a.id)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') setOpenId(a.id)
+                  if (e.key === 'Enter' && e.target === e.currentTarget) setOpenId(a.id)
                 }}
               >
-                <div className="cell-main">
+                <span role="cell" className="cell-num mono">
+                  {String(i + 1).padStart(2, '0')}
+                </span>
+                <span role="cell" className="cell-main">
                   <span className="company">{a.company}</span>
                   <span className="role">{a.role}</span>
-                </div>
-                <span className="cell-years">{a.yearsReq ?? ''}</span>
-                <span className="cell-channel">
+                </span>
+                <span role="cell" className="cell-years mono">
+                  {a.yearsReq || '–'}
+                </span>
+                <span role="cell" className="cell-channel">
                   {a.url ? (
                     <a href={a.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
                       {channelLabel(a.url, a.channel)}
                     </a>
                   ) : (
-                    channelLabel(a.url, a.channel)
+                    '–'
                   )}
                 </span>
-                <span className="cell-date mono">{a.submitted ?? ''}</span>
-                <span className="cell-docs mono ta-r">{a.docs?.length ?? ''}</span>
-                <span className="cell-status" onClick={(e) => e.stopPropagation()}>
-                  <StatusDot status={a.status} asButton onClick={() => setMenuFor(menuFor === a.id ? null : a.id)} />
+                <span role="cell" className="cell-date mono ta-r">
+                  {a.submitted ?? '–'}
+                </span>
+                <span role="cell" className="cell-docs mono ta-r">
+                  {a.docs?.length ?? '–'}
+                </span>
+                <span role="cell" className="cell-status">
+                  <StatusDot status={a.status} asButton onClick={undefined} />
+                  <button
+                    type="button"
+                    className="status-hit"
+                    aria-label={`${a.company} 상태 변경`}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      openRowMenu(a.id, e)
+                    }}
+                  />
                   {menuFor === a.id && (
                     <StatusMenu
                       current={a.status}
+                      up={menuUp}
                       onPick={(s) => void changeStatus(a, s)}
                       onClose={() => setMenuFor(null)}
                     />
                   )}
                 </span>
-                <span className="cell-notes">{a.notes ?? ''}</span>
+                <span role="cell" className="cell-notes">
+                  {a.notes ?? ''}
+                </span>
               </div>
             ))}
           </section>
         ))}
-        {groups.length === 0 && <p className="empty">조건에 맞는 항목 없음</p>}
+        {groups.visibleCount === 0 && (
+          <div className="empty">
+            <p>조건에 맞는 항목 없음</p>
+            <button
+              type="button"
+              className="linkish"
+              onClick={() => {
+                setStatusFilter(new Set())
+                setQuery('')
+              }}
+            >
+              필터 해제
+            </button>
+          </div>
+        )}
       </div>
 
       {openApp && (
@@ -653,10 +880,12 @@ export default function App() {
         />
       )}
 
+      {composer && <Composer user={user} token={token} onClose={() => setComposer(false)} toast={showToast} />}
+
       {toast && (
-        <div className={`toast ${toast.kind}`} role="status" aria-live="polite">
+        <button type="button" className={`toast ${toast.kind}`} role="status" aria-live="polite" onClick={() => setToast(null)}>
           {toast.text}
-        </div>
+        </button>
       )}
     </main>
   )
