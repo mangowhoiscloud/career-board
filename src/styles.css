@@ -768,3 +768,45 @@ button {
     display: none;
   }
 }
+
+/* ── Insights: 데이터가 곧 장식 ── */
+.insights {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  gap: 44px;
+  padding: 16px 0 18px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+.viz {
+  min-width: 0;
+}
+.viz-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-3);
+  letter-spacing: 0.14em;
+  margin: 0 0 10px;
+}
+.sankey,
+.timeline {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.sankey-label,
+.tl-tick {
+  font-family: var(--mono);
+  font-size: 10px;
+  fill: var(--text-2);
+}
+.tl-tick {
+  fill: var(--text-3);
+}
+
+@media (max-width: 1000px) {
+  .insights {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+}

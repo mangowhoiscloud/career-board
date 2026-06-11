@@ -183,6 +183,186 @@ function FunnelBar({ apps }: { apps: Application[] }) {
   )
 }
 
+
+/* ── Sankey: 제출 → 서류 → 과제 → 면접 → 오퍼 (이탈 포함) ── */
+function Sankey({ apps }: { apps: Application[] }) {
+  const W = 560
+  const H = 168
+  const NODE_W = 5
+  const GAP = 9
+  const by = (s: Status) => apps.filter((x) => x.status === s).length
+  const submitted = apps.length - by('ready')
+  const wait = by('submitted')
+  const rejDocs = by('rejected-docs')
+  const passDocs = submitted - wait - rejDocs
+  const screening = by('screening')
+  const rejAsg = by('rejected-assignment')
+  const curAsg = by('assignment')
+  const toInt = by('interview') + by('rejected-interview') + by('offer')
+  const offer = by('offer')
+  const curInt = by('interview')
+  const rejInt = by('rejected-interview')
+  if (submitted === 0) return null
+
+  type Node = { label: string; count: number; color: string }
+  const cols: { x: number; nodes: Node[] }[] = [
+    { x: 8, nodes: [{ label: '제출', count: submitted, color: '#c9c9cf' }] },
+    {
+      x: 176,
+      nodes: [
+        { label: '서류 통과', count: passDocs, color: '#e9c46a' },
+        { label: '응답 대기', count: wait, color: '#55555b' },
+        { label: '서류 탈락', count: rejDocs, color: '#a04a45' },
+      ],
+    },
+    {
+      x: 344,
+      nodes: [
+        { label: '면접 진입', count: toInt, color: '#f08c00' },
+        { label: '과제 진행', count: curAsg, color: '#e8a33d' },
+        { label: '통과 대기', count: screening, color: '#e9c46a' },
+        { label: '과제 탈락', count: rejAsg, color: '#b45a50' },
+      ],
+    },
+    {
+      x: 478,
+      nodes: [
+        { label: '오퍼', count: offer, color: '#46c68a' },
+        { label: '면접 진행', count: curInt, color: '#f08c00' },
+        { label: '면접 탈락', count: rejInt, color: '#c9655c' },
+      ],
+    },
+  ]
+  const scale = (H - 30) / submitted
+  const h = (n: number) => Math.max(n * scale, n > 0 ? 3 : 0)
+  // 컬럼별 y 배치
+  const pos = cols.map((c) => {
+    let y = 10
+    return c.nodes.map((n) => {
+      const node = { ...n, y, h: h(n.count) }
+      if (n.count > 0) y += h(n.count) + GAP
+      return node
+    })
+  })
+  // 리본: src 컬럼의 소비 오프셋 추적
+  const ribbon = (
+    sx: number,
+    sy: number,
+    tx: number,
+    ty: number,
+    rh: number,
+    color: string,
+    key: string,
+  ) => {
+    const mx = (sx + tx) / 2
+    return (
+      <path
+        key={key}
+        d={`M ${sx} ${sy} C ${mx} ${sy}, ${mx} ${ty}, ${tx} ${ty} L ${tx} ${ty + rh} C ${mx} ${ty + rh}, ${mx} ${sy + rh}, ${sx} ${sy + rh} Z`}
+        fill={color}
+        opacity="0.28"
+      />
+    )
+  }
+  const ribbons: React.ReactNode[] = []
+  const flowFrom = (ci: number, si: number, targets: number[]) => {
+    let off = 0
+    const s = pos[ci][si]
+    targets.forEach((ti) => {
+      const t = pos[ci + 1][ti]
+      if (t.count <= 0) return
+      ribbons.push(
+        ribbon(cols[ci].x + NODE_W, s.y + off, cols[ci + 1].x, t.y, t.h, t.color, `${ci}-${si}-${ti}`),
+      )
+      off += t.h
+    })
+  }
+  flowFrom(0, 0, [0, 1, 2])
+  flowFrom(1, 0, [0, 1, 2, 3])
+  flowFrom(2, 0, [0, 1, 2])
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="sankey" role="img" aria-label="지원 퍼널 플로우">
+      {ribbons}
+      {pos.map((nodes, ci) =>
+        nodes.map(
+          (n, ni) =>
+            n.count > 0 && (
+              <g key={`${ci}-${ni}`}>
+                <rect x={cols[ci].x} y={n.y} width={NODE_W} height={n.h} rx="1.5" fill={n.color} />
+                <text
+                  x={ci === 0 ? cols[ci].x : cols[ci].x + NODE_W + 7}
+                  y={n.y + Math.min(n.h / 2, 14) + 3.5}
+                  className="sankey-label"
+                  textAnchor={ci === 0 ? 'start' : 'start'}
+                  transform={ci === 0 ? `translate(0, ${n.h + 14 > H ? 0 : n.h + 6})` : undefined}
+                >
+                  {n.label} {n.count}
+                </text>
+              </g>
+            ),
+        ),
+      )}
+    </svg>
+  )
+}
+
+/* ── 캠페인 타임라인: 제출일 버스트 ── */
+function Timeline({ apps }: { apps: Application[] }) {
+  const W = 480
+  const H = 168
+  const dated = apps.filter((a) => a.submitted)
+  if (dated.length === 0) return null
+  const toDate = (s: string) => new Date(s.length === 7 ? s + '-15' : s).getTime()
+  const times = dated.map((a) => toDate(a.submitted as string))
+  const min = Math.min(...times)
+  const max = Math.max(...times)
+  const span = Math.max(max - min, 1)
+  const x = (t: number) => 16 + ((t - min) / span) * (W - 50)
+  // 날짜별 스택
+  const byDay = new Map<string, Application[]>()
+  for (const a of dated) {
+    const k = a.submitted as string
+    byDay.set(k, [...(byDay.get(k) ?? []), a])
+  }
+  // 월 눈금
+  const months: { t: number; label: string }[] = []
+  const cur = new Date(min)
+  cur.setDate(1)
+  while (cur.getTime() <= max) {
+    if (cur.getTime() >= min - 25 * 86400000)
+      months.push({ t: Math.max(cur.getTime(), min), label: String(cur.getMonth() + 1).padStart(2, '0') })
+    cur.setMonth(cur.getMonth() + 1)
+  }
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="timeline" role="img" aria-label="제출 타임라인">
+      <line x1="10" y1={H - 22} x2={W - 10} y2={H - 22} stroke="var(--border)" strokeWidth="1" />
+      {months.map((m) => (
+        <g key={m.label}>
+          <line x1={x(m.t)} y1={H - 22} x2={x(m.t)} y2={H - 18} stroke="var(--border-strong)" strokeWidth="1" />
+          <text x={x(m.t)} y={H - 8} className="tl-tick" textAnchor="middle">
+            {m.label}
+          </text>
+        </g>
+      ))}
+      {[...byDay.entries()].map(([day, list]) =>
+        list.map((a, i) => (
+          <circle
+            key={a.id}
+            cx={x(toDate(day))}
+            cy={H - 30 - i * 7.5}
+            r="2.8"
+            fill={STATUS_COLOR[a.status]}
+            opacity={statusTone(a.status) === 'muted' ? 0.55 : 0.95}
+          >
+            <title>{`${a.company} · ${STATUS_LABEL[a.status]} · ${day}`}</title>
+          </circle>
+        )),
+      )}
+    </svg>
+  )
+}
+
 function Drawer({
   app,
   token,
@@ -727,6 +907,17 @@ export default function App() {
               {groups.visibleCount}건 표시 중
             </span>
           )}
+        </div>
+      </section>
+
+      <section className="insights" aria-label="시각화">
+        <div className="viz">
+          <h2 className="viz-label mono">FLOW</h2>
+          <Sankey apps={apps} />
+        </div>
+        <div className="viz">
+          <h2 className="viz-label mono">TIMELINE</h2>
+          <Timeline apps={apps} />
         </div>
       </section>
 
