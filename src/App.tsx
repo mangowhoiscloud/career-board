@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, whoami } from './api'
+import { listRequests, type AgentRequest, commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, whoami } from './api'
 import type { Application, BoardData, Status } from './types'
 import { STATUS_COLOR, STATUS_LABEL, STATUS_ORDER } from './types'
 
@@ -466,7 +466,14 @@ function Drawer({
           {app.submitted && (
             <div>
               <dt>제출일</dt>
-              <dd className="mono">{app.submitted}</dd>
+              <dd className="mono">
+                {app.submitted}
+                {app.status === 'submitted' &&
+                  (() => {
+                    const days = Math.floor((Date.now() - new Date(app.submitted as string).getTime()) / 86400000)
+                    return days >= 14 ? ` · ${days}일 경과 — 팔로업 검토` : days >= 1 ? ` · ${days}일 경과` : ''
+                  })()}
+              </dd>
             </div>
           )}
           {app.url && (
@@ -583,20 +590,31 @@ function Composer({
   const ref = useDialog(onClose)
 
   const submit = async () => {
-    if (!reqUrl.trim()) return
+    if (!reqUrl.trim() && reqType !== 'mail-check' && reqType !== 'explore') return
     setBusy(true)
     const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12)
     const typeLabel: Record<string, string> = {
-      package: '지원 패키지 제작 (이력서+커버레터)',
+      package: '지원 패키지 제작 (풀세트)',
       coverletter: '커버레터·지원동기 작성',
       research: '회사·JD 리서치',
-      submit: '제출 보조 (폼 입력안)',
+      explore: '공고 탐색 (에이전트 직군 스윕)',
+      'mail-check': '메일 확인·전형 결과 환류',
+      submit: '제출 실행 (메일 지원·폼 준비)',
+    }
+    const deliverables: Record<string, string> = {
+      package: '이력서 PDF + 경력기술서 + 자기소개서 + 공고 요구 txt — Downloads·docs/ 동기화·보드 ready 등록',
+      coverletter: '커버레터 PDF·txt (이력서 수치 반복 금지 규칙 적용)',
+      research: '트랜스크립트 (JD 분석·자산 매핑·갭·공명점)',
+      explore: '라이브 실측 공고 목록 + 우선순위 + 메모리 영속화. 기본 스윕 = Anthropic·OpenAI 등 에이전트 직군 + 세션 탐색 스캐폴드 재사용',
+      'mail-check': 'Gmail 스캔으로 접수확인·탈락·서류통과를 분류해 보드 상태 전환 커밋(agent:mail-scan)으로 환류',
+      submit: '메일 지원 대상 = Gmail API 로 첨부 발송, 폼 대상 = 페이지 오픈 + 첨부 세트·입력안 안내',
     }
     const body = [
       `# REQ-${ts} · ${typeLabel[reqType]}`,
       '',
       `- type: ${reqType}`,
-      `- url: ${reqUrl.trim()}`,
+      `- url: ${reqUrl.trim() || '(없음)'}`,
+      `- deliverables: ${deliverables[reqType]}`,
       `- requested-by: board:${user}`,
       `- requested-at: ${new Date().toISOString()}`,
       `- status: pending`,
@@ -650,10 +668,12 @@ function Composer({
           <label>
             유형
             <select name="type" value={reqType} onChange={(e) => setReqType(e.target.value)}>
-              <option value="package">지원 패키지 제작 (이력서+커버레터)</option>
+              <option value="package">지원 패키지 제작 (풀세트)</option>
               <option value="coverletter">커버레터·지원동기 작성</option>
               <option value="research">회사·JD 리서치</option>
-              <option value="submit">제출 보조 (폼 입력안)</option>
+              <option value="explore">공고 탐색 (에이전트 직군 스윕)</option>
+              <option value="mail-check">메일 확인·전형 결과 환류</option>
+              <option value="submit">제출 실행 (메일 지원·폼 준비)</option>
             </select>
           </label>
           <label>
@@ -700,6 +720,16 @@ export default function App() {
   const [menuUp, setMenuUp] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
   const [composer, setComposer] = useState(false)
+  const [queue, setQueue] = useState<AgentRequest[] | null>(null)
+  const [queueOpen, setQueueOpen] = useState(false)
+  const toggleQueue = useCallback(async () => {
+    if (queueOpen) {
+      setQueueOpen(false)
+      return
+    }
+    setQueueOpen(true)
+    if (token) setQueue(await listRequests(token))
+  }, [queueOpen, token])
   const toastTimer = useRef<number | undefined>(undefined)
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -882,6 +912,9 @@ export default function App() {
           mango<span className="wordmark-dot">.</span>career
         </h1>
         <div className="topbar-right mono">
+          <button type="button" className="topbar-action" onClick={() => void toggleQueue()}>
+            요청 큐
+          </button>
           <button type="button" className="topbar-action" onClick={() => setComposer(true)}>
             에이전트 요청
           </button>
@@ -943,6 +976,32 @@ export default function App() {
           <Timeline apps={apps} />
         </div>
       </section>
+
+      {queueOpen && (
+        <section className="filters" aria-label="요청 큐" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '4px' }}>
+          {queue === null ? (
+            <span className="gate-hint">큐 로드 중…</span>
+          ) : queue.length === 0 ? (
+            <span className="gate-hint">요청 없음 — "에이전트 요청"으로 등록하면 로컬 세션이 처리합니다</span>
+          ) : (
+            queue.map((q) => (
+              <div key={q.id} style={{ display: 'flex', gap: '10px', alignItems: 'baseline', fontSize: '12px' }}>
+                <span className="mono" style={{ opacity: 0.6, minWidth: '11em' }}>{q.id}</span>
+                <span className="mono" style={{ minWidth: '7em' }}>{q.type}</span>
+                <span
+                  className="mono"
+                  style={{
+                    color: q.status === 'done' ? '#6b6b72' : q.status === 'pending' ? '#e8a33d' : '#e9c46a',
+                  }}
+                >
+                  {q.status}
+                </span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.title}</span>
+              </div>
+            ))
+          )}
+        </section>
+      )}
 
       <section className="filters" aria-label="필터">
         {STATUS_ORDER.map((s, i) => (

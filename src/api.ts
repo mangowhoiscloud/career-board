@@ -78,6 +78,49 @@ export async function createFile(
   if (!res.ok) throw new Error(`요청 생성 실패 (${res.status})`)
 }
 
+export type AgentRequest = {
+  id: string
+  type: string
+  status: string
+  url?: string
+  title: string
+}
+
+/* requests/ 큐 목록 — 최근 20건의 type/status 를 파싱 */
+export async function listRequests(token: string): Promise<AgentRequest[]> {
+  const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/requests`, {
+    headers: headers(token),
+  })
+  if (!res.ok) return []
+  const files = (await res.json()) as { name: string; path: string }[]
+  const mds = files
+    .filter((f) => f.name.endsWith('.md'))
+    .sort((a, b) => b.name.localeCompare(a.name))
+    .slice(0, 20)
+  const out: AgentRequest[] = []
+  for (const f of mds) {
+    try {
+      const r = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${encodeURI(f.path)}`, {
+        headers: headers(token),
+      })
+      if (!r.ok) continue
+      const j = await r.json()
+      const text = decodeURIComponent(escape(atob((j.content as string).replace(/\n/g, ''))))
+      const pick = (k: string) => text.match(new RegExp(`^- ${k}:\\s*(.+)$`, 'm'))?.[1]?.trim()
+      out.push({
+        id: f.name.replace('.md', ''),
+        type: pick('type') ?? '?',
+        status: pick('status') ?? 'pending',
+        url: pick('url'),
+        title: text.match(/^# (.+)$/m)?.[1] ?? f.name,
+      })
+    } catch {
+      /* skip unreadable */
+    }
+  }
+  return out
+}
+
 export async function fetchDocBlobUrl(token: string, path: string): Promise<string> {
   const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${encodeURI(path)}`, {
     headers: headers(token),
