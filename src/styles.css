@@ -1082,6 +1082,8 @@ button {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  max-width: 240px;
+  overflow: hidden; /* 자식이 부풀어도 레일 밖으로 칠해지지 않게 (Safari flex 축소 차이 방어) */
 }
 .sess-new {
   background: none;
@@ -1110,6 +1112,8 @@ button {
   padding: 7px 10px;
   border-radius: 5px;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   transition: background 120ms;
 }
 .sess-row:hover {
@@ -1130,6 +1134,8 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1 1 0; /* min-width:0 동반 — max-width만으로는 Safari가 flex 아이템을 줄이지 않는다 */
+  min-width: 0;
   max-width: 100%;
 }
 .sess-row.sel .sess-title {

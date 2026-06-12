@@ -1453,6 +1453,15 @@ function typeLabelOf(types: RequestType[], id: string): string {
   return types.find((t) => t.id === id)?.label ?? id
 }
 
+/* 세션 제목용 프롬프트 요약: 마커·REQ 헤더 잔재를 걷어내고 첫 의미 줄만 (제목은 CSS가 1줄 말줄임) */
+function sessTitleText(prompt: string): string {
+  const line = prompt
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l && !l.startsWith('[mail-reply:') && !l.startsWith('#') && !l.startsWith('- ') && !l.startsWith('##'))
+  return (line ?? prompt).slice(0, 80)
+}
+
 /* 완료 run 산출물: reports/runs/*.md PAT fetch → 트랜스크립트 마지막에 마크다운 렌더 */
 function RunOutput({ token, run }: { token: string; run: RunnerRun }) {
   const [output, setOutput] = useState<string | null>(null)
@@ -1797,7 +1806,7 @@ function AgentView({
         </button>
         {sessions.map((s) => {
           const statusText = s.run ? runStatusText(s.run) : '대기'
-          const title = `${typeLabelOf(types, s.run?.type ?? s.req?.type ?? '')} · ${s.run?.prompt ?? s.req?.prompt ?? ''}`
+          const title = `${typeLabelOf(types, s.run?.type ?? s.req?.type ?? '')} · ${sessTitleText(s.run?.prompt ?? s.req?.prompt ?? '')}`
           return (
             <button
               key={s.id}
