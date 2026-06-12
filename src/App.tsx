@@ -164,6 +164,31 @@ function StatusMenu({
   )
 }
 
+/* ── 서류통과(screening) 도달 판정: 현재 상태가 후속 단계이거나 이력에 screening 경유 ── */
+const PAST_SCREENING: ReadonlySet<Status> = new Set([
+  'screening', 'assignment', 'interview', 'offer', 'rejected-assignment', 'rejected-interview',
+])
+const reachedScreening = (a: Application): boolean =>
+  PAST_SCREENING.has(a.status) || (a.history ?? []).some((h) => h.to === 'screening')
+
+/* 상태 점프(제출→과제/면접 등) 시 경유한 screening 을 이력에 함께 기록 */
+const STAGES_AFTER_SCREENING: ReadonlySet<Status> = new Set([
+  'assignment', 'interview', 'offer', 'rejected-assignment', 'rejected-interview',
+])
+function historyHops(a: Application, next: Status, by: string): { at: string; from: Status | ''; to: Status; by: string }[] {
+  const at = new Date().toISOString()
+  const hops: { at: string; from: Status | ''; to: Status; by: string }[] = []
+  const needsScreeningHop =
+    STAGES_AFTER_SCREENING.has(next) && !reachedScreening(a) && a.status !== 'screening'
+  if (needsScreeningHop) {
+    hops.push({ at, from: a.status, to: 'screening', by })
+    hops.push({ at, from: 'screening', to: next, by })
+  } else {
+    hops.push({ at, from: a.status, to: next, by })
+  }
+  return hops
+}
+
 function FunnelBar({ apps }: { apps: Application[] }) {
   const total = apps.length || 1
   return (
@@ -194,7 +219,7 @@ function Sankey({ apps }: { apps: Application[] }) {
   const submitted = apps.length - by('ready')
   const wait = by('submitted')
   const rejDocs = by('rejected-docs')
-  const passDocs = submitted - wait - rejDocs
+  const passDocs = apps.filter(reachedScreening).length
   const screening = by('screening')
   const rejAsg = by('rejected-assignment')
   const curAsg = by('assignment')
@@ -737,10 +762,7 @@ export default function App() {
                 ...a,
                 status: next,
                 submitted: stamped,
-                history: [
-                  ...(a.history ?? []),
-                  { at: new Date().toISOString(), from: a.status, to: next, by: `board:${user}` },
-                ],
+                history: [...(a.history ?? []), ...historyHops(a, next, `board:${user}`)],
               }
             : a,
         ),
@@ -764,10 +786,7 @@ export default function App() {
                     ...a,
                     status: next,
                     submitted: next === 'submitted' && !a.submitted ? todayLocal() : a.submitted,
-                    history: [
-                      ...(a.history ?? []),
-                      { at: new Date().toISOString(), from: a.status, to: next, by: `board:${user}` },
-                    ],
+                    history: [...(a.history ?? []), ...historyHops(a, next, `board:${user}`)],
                   }
                 : a,
             ),
@@ -800,6 +819,8 @@ export default function App() {
     return m
   }, [apps])
 
+  const screeningReached = useMemo(() => apps.filter(reachedScreening).length, [apps])
+
   const stats = useMemo(() => {
     const inProgress = counts.screening + counts.assignment + counts.interview
     const rejected = counts['rejected-docs'] + counts['rejected-assignment'] + counts['rejected-interview']
@@ -818,7 +839,11 @@ export default function App() {
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase()
     const visible = apps.filter((a) => {
-      if (statusFilter.size > 0 && !statusFilter.has(a.status)) return false
+      if (statusFilter.size > 0) {
+        const direct = statusFilter.has(a.status)
+        const viaScreening = statusFilter.has('screening') && reachedScreening(a)
+        if (!direct && !viaScreening) return false
+      }
       if (q && !`${a.company} ${a.role} ${a.notes ?? ''}`.toLowerCase().includes(q)) return false
       return true
     })
@@ -938,7 +963,7 @@ export default function App() {
             >
               <span className="dot" style={{ background: STATUS_COLOR[s] }} aria-hidden="true" />
               {STATUS_LABEL[s]}
-              <span className="filter-count mono">{counts[s]}</span>
+              <span className="filter-count mono">{s === 'screening' ? screeningReached : counts[s]}</span>
             </button>
           </span>
         ))}
