@@ -1144,7 +1144,10 @@ function MailModal({
             {applied ? (
               <span className="mm-note">초안 적용됨</span>
             ) : waiting ? (
-              <span className="mm-note">초안 생성 중 · 최대 수 분</span>
+              <span className="mm-note sync-progress">
+                <span className="sync-spinner" aria-hidden="true" />
+                초안 생성 중 · 최대 수 분
+              </span>
             ) : (
               <button type="button" className="text-action" disabled={draftBusy} onClick={() => void requestDraft()}>
                 {draftBusy ? '요청 중…' : '에이전트 초안'}
