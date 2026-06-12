@@ -29,6 +29,28 @@ function channelLabel(url?: string, channel?: string): string {
   }
 }
 
+/* 알림 kind → 도트 색. status 팔레트 재사용 (rejection=dim red, receipt=submitted gray). */
+const NOTIF_KIND_DOT: Record<string, string> = {
+  rejection: '#a04a45',
+  receipt: '#c9c9cf',
+  interview: '#f08c00',
+  assignment: '#e8a33d',
+}
+function notifKindTone(kind: string): 'rejection' | 'receipt' | 'other' {
+  return kind === 'rejection' || kind === 'receipt' ? kind : 'other'
+}
+
+/* 요청 큐 status → 도트 색. pending=앰버, processing=screening 옐로, done=muted, failed=danger. */
+const QUEUE_DOT: Record<string, string> = {
+  pending: '#e8a33d',
+  processing: '#e9c46a',
+  done: '#6b6b72',
+  failed: '#b3514d',
+}
+function queueTone(s: string): 'pending' | 'processing' | 'done' | 'failed' {
+  return s === 'processing' || s === 'done' || s === 'failed' ? s : 'pending'
+}
+
 function todayLocal(): string {
   return new Intl.DateTimeFormat('sv-SE').format(new Date())
 }
@@ -729,9 +751,14 @@ export default function App() {
       setQueueOpen(false)
       return
     }
+    setNotifOpen(false)
     setQueueOpen(true)
     if (token) setQueue(await listRequests(token))
   }, [queueOpen, token])
+  const toggleNotif = useCallback(() => {
+    setQueueOpen(false)
+    setNotifOpen((v) => !v)
+  }, [])
   const toastTimer = useRef<number | undefined>(undefined)
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -915,10 +942,22 @@ export default function App() {
           mango<span className="wordmark-dot">.</span>career
         </h1>
         <div className="topbar-right mono">
-          <button type="button" className="topbar-action" onClick={() => setNotifOpen((v) => !v)}>
+          <button
+            type="button"
+            className="topbar-action"
+            aria-expanded={notifOpen}
+            aria-controls="panel-notif"
+            onClick={toggleNotif}
+          >
             알림{notifs && notifs.items.filter((n) => !n.handled).length > 0 ? ` ${notifs.items.filter((n) => !n.handled).length}` : ''}
           </button>
-          <button type="button" className="topbar-action" onClick={() => void toggleQueue()}>
+          <button
+            type="button"
+            className="topbar-action"
+            aria-expanded={queueOpen}
+            aria-controls="panel-queue"
+            onClick={() => void toggleQueue()}
+          >
             요청 큐
           </button>
           <button type="button" className="topbar-action" onClick={() => setComposer(true)}>
@@ -984,65 +1023,88 @@ export default function App() {
       </section>
 
       {notifOpen && (
-        <section className="filters" aria-label="알림" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '4px' }}>
+        <section id="panel-notif" className="panel" aria-label="알림">
+          <div className="panel-head">
+            <span className="panel-title">알림</span>
+            {notifs && notifs.items.length > 0 && (
+              <span className={`panel-count${notifs.items.some((n) => !n.handled) ? ' alert' : ''}`}>
+                {notifs.items.some((n) => !n.handled)
+                  ? `${notifs.items.filter((n) => !n.handled).length} 미확인`
+                  : `${notifs.items.length}`}
+              </span>
+            )}
+            <span className="panel-rule" aria-hidden="true" />
+            {notifs && notifs.items.some((n) => !n.handled) && (
+              <button
+                type="button"
+                className="panel-action"
+                onClick={async () => {
+                  if (!token || !notifs) return
+                  try {
+                    await markNotificationsHandled(token, notifs.items, notifs.sha)
+                    setNotifs(await fetchNotifications(token))
+                    showToast({ kind: 'ok', text: '알림 모두 확인 처리' })
+                  } catch (e) {
+                    showToast({ kind: 'err', text: e instanceof Error ? e.message : '알림 갱신 실패' })
+                  }
+                }}
+              >
+                모두 확인
+              </button>
+            )}
+          </div>
           {!notifs || notifs.items.length === 0 ? (
-            <span className="gate-hint">알림 없음 — mail-cron(30분 주기)이 채용 메일을 분류해 여기에 쌓습니다</span>
+            <p className="panel-empty">알림 없음 — mail-cron(30분 주기)이 채용 메일을 분류해 여기에 쌓습니다</p>
           ) : (
-            <>
+            <div className="panel-rows" role="list">
               {notifs.items.slice(0, 15).map((n) => (
-                <div key={n.id} style={{ display: 'flex', gap: '10px', alignItems: 'baseline', fontSize: '12px', opacity: n.handled ? 0.45 : 1 }}>
-                  <span className="mono" style={{ opacity: 0.6, minWidth: '8.5em' }}>{n.at.slice(5, 16).replace('T', ' ')}</span>
-                  <span className="mono" style={{ minWidth: '6.5em', color: n.kind === 'rejection' ? '#c9655c' : n.kind === 'receipt' ? '#c9c9cf' : '#e8a33d' }}>{n.kind}</span>
-                  <span style={{ minWidth: '8em' }}>{n.company ?? n.source}</span>
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{n.subject}</span>
-                  {n.statusChange && <span className="mono" style={{ color: '#e9c46a' }}>{n.statusChange}</span>}
+                <div key={n.id} role="listitem" className={`panel-row notif-row${n.handled ? ' handled' : ''}`}>
+                  <span className="p-time mono">{n.at.slice(5, 16).replace('T', ' ')}</span>
+                  <span className={`p-kind mono nk-${notifKindTone(n.kind)}`}>
+                    <span className="dot" style={{ background: NOTIF_KIND_DOT[n.kind] ?? '#e8a33d' }} aria-hidden="true" />
+                    {n.kind}
+                  </span>
+                  <span className="p-org">{n.company ?? n.source}</span>
+                  <span className="p-subject">{n.subject}</span>
+                  {n.statusChange ? (
+                    <span className="p-change mono">{n.statusChange}</span>
+                  ) : (
+                    <span className="p-change none mono" aria-hidden="true">
+                      –
+                    </span>
+                  )}
                 </div>
               ))}
-              <div>
-                <button
-                  type="button"
-                  className="topbar-action"
-                  onClick={async () => {
-                    if (!token || !notifs) return
-                    try {
-                      await markNotificationsHandled(token, notifs.items, notifs.sha)
-                      setNotifs(await fetchNotifications(token))
-                      showToast({ kind: 'ok', text: '알림 모두 확인 처리' })
-                    } catch (e) {
-                      showToast({ kind: 'err', text: e instanceof Error ? e.message : '알림 갱신 실패' })
-                    }
-                  }}
-                >
-                  모두 확인
-                </button>
-              </div>
-            </>
+            </div>
           )}
         </section>
       )}
 
       {queueOpen && (
-        <section className="filters" aria-label="요청 큐" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '4px' }}>
+        <section id="panel-queue" className="panel" aria-label="요청 큐">
+          <div className="panel-head">
+            <span className="panel-title">요청 큐</span>
+            {queue && queue.length > 0 && <span className="panel-count">{queue.length}</span>}
+            <span className="panel-rule" aria-hidden="true" />
+          </div>
           {queue === null ? (
-            <span className="gate-hint">큐 로드 중…</span>
+            <p className="panel-empty">불러오는 중…</p>
           ) : queue.length === 0 ? (
-            <span className="gate-hint">요청 없음 — "에이전트 요청"으로 등록하면 로컬 세션이 처리합니다</span>
+            <p className="panel-empty">요청 없음 — "에이전트 요청"으로 등록하면 로컬 세션이 처리합니다</p>
           ) : (
-            queue.map((q) => (
-              <div key={q.id} style={{ display: 'flex', gap: '10px', alignItems: 'baseline', fontSize: '12px' }}>
-                <span className="mono" style={{ opacity: 0.6, minWidth: '11em' }}>{q.id}</span>
-                <span className="mono" style={{ minWidth: '7em' }}>{q.type}</span>
-                <span
-                  className="mono"
-                  style={{
-                    color: q.status === 'done' ? '#6b6b72' : q.status === 'pending' ? '#e8a33d' : '#e9c46a',
-                  }}
-                >
-                  {q.status}
-                </span>
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.title}</span>
-              </div>
-            ))
+            <div className="panel-rows" role="list">
+              {queue.map((q) => (
+                <div key={q.id} role="listitem" className="panel-row queue-row">
+                  <span className="p-id mono">{q.id}</span>
+                  <span className="p-type">{q.type}</span>
+                  <span className={`p-status mono qs-${queueTone(q.status)}`}>
+                    <span className="dot" style={{ background: QUEUE_DOT[queueTone(q.status)] }} aria-hidden="true" />
+                    {q.status}
+                  </span>
+                  <span className="p-subject">{q.title}</span>
+                </div>
+              ))}
+            </div>
           )}
         </section>
       )}
