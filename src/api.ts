@@ -7,7 +7,7 @@ const API = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${PATH}`
 
 export const DATA_REPO_URL = `https://github.com/${OWNER}/${REPO}`
 
-function b64decodeUtf8(b64: string): string {
+export function b64decodeUtf8(b64: string): string {
   const bin = atob(b64.replace(/\n/g, ''))
   const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
   return new TextDecoder().decode(bytes)
@@ -25,13 +25,14 @@ export interface Fetched {
   sha: string
 }
 
-function headers(token: string): HeadersInit {
+export function apiHeaders(token: string): Record<string, string> {
   return {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',
     'X-GitHub-Api-Version': '2022-11-28',
   }
 }
+const headers = apiHeaders
 
 export async function fetchBoard(token: string): Promise<Fetched> {
   const res = await fetch(API, { headers: headers(token) })
@@ -66,7 +67,7 @@ export async function commitBoard(
 
 /* ── career-data 범용 파일 입출력 (메일함·러너 상태가 공유) ── */
 
-function fileUrl(path: string): string {
+export function fileUrl(path: string): string {
   return `https://api.github.com/repos/${OWNER}/${REPO}/contents/${encodeURI(path)}`
 }
 
@@ -115,10 +116,13 @@ export interface InboxMessage {
   id: string
   at: number
   from: string
+  to?: string
   subject: string
   snippet: string
   unread: boolean
   message_id?: string
+  company?: string | null
+  kind?: string | null
   body: string
 }
 export interface InboxData {
@@ -167,16 +171,22 @@ export interface RequestType {
   needs: string
   cwd: string
 }
+export interface RunEvent {
+  at: string
+  type: string
+  text: string
+}
 export interface RunnerRun {
   id: string
   status: 'running' | 'done' | 'failed'
   started: string | null
   ended: string | null
   type: string
-  combo: string
+  combo: string | null
   model: string
   prompt: string
-  output?: string
+  events_tail?: RunEvent[]
+  output?: string | null
   error?: string
 }
 export interface RunnerState {
@@ -214,25 +224,29 @@ export type Notification = {
   handled: boolean
 }
 
-export async function fetchNotifications(token: string): Promise<{ items: Notification[]; sha: string } | null> {
-  const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/data/notifications.json`, {
-    headers: headers(token),
-  })
-  if (!res.ok) return null
-  const json = await res.json()
-  const text = decodeURIComponent(escape(atob((json.content as string).replace(/\n/g, ''))))
-  const data = JSON.parse(text) as { items: Notification[] }
-  return { items: data.items ?? [], sha: json.sha as string }
+export interface NotifFile {
+  schema?: number
+  items: Notification[]
 }
 
-export async function markNotificationsHandled(token: string, items: Notification[], sha: string): Promise<void> {
-  const body = JSON.stringify({ schema: 1, items: items.map((n) => ({ ...n, handled: true })) }, null, 1)
-  const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/data/notifications.json`, {
-    method: 'PUT',
-    headers: { ...headers(token), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message: 'notifications: 모두 확인 (board)', content: b64encodeUtf8(body), sha }),
-  })
-  if (!res.ok) throw new Error(`알림 갱신 실패 (${res.status})`)
+/* 읽음 처리(개별·일괄): 최신본을 다시 읽어 sha 충돌을 피하고 1커밋으로 기록 */
+export async function markNotificationsRead(
+  token: string,
+  ids: 'all' | string[],
+  user: string,
+): Promise<void> {
+  const fetched = await fetchJsonFile<NotifFile>(token, 'data/notifications.json')
+  if (!fetched) return
+  const items = fetched.data.items.map((n) =>
+    ids === 'all' || ids.includes(n.id) ? { ...n, handled: true } : n,
+  )
+  await putJsonFile(
+    token,
+    'data/notifications.json',
+    { schema: fetched.data.schema ?? 1, items },
+    fetched.sha,
+    `notifications: 읽음 ${ids === 'all' ? '전체' : `${ids.length}건`} (board:${user})`,
+  )
 }
 
 export async function fetchDocBlobUrl(token: string, path: string): Promise<string> {

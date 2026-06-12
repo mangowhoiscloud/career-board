@@ -797,14 +797,21 @@ button {
   color: var(--text-3);
   font-size: 11px;
 }
+.mail-note.err {
+  color: var(--danger);
+}
 .mail-list {
   display: flex;
   flex-direction: column;
 }
+/* 계정 섹션(GMAIL/NAVER)은 wave-head 문법 재사용 — 좌측 표식 컬럼 없음 */
+.mail-group .wave-head {
+  margin-top: 18px;
+}
 /* 48px 2줄 행: 발신·제목 위 13px, 스니펫 아래 11px. 미읽음 = 텍스트 톤 (윤곽선 마크 금지) */
 .mail-row {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
   height: 48px;
@@ -830,11 +837,6 @@ button {
 }
 .mail-row.unread .mail-time {
   color: var(--amber);
-}
-.mail-acct {
-  font-size: 10.5px;
-  color: var(--text-3);
-  text-align: center;
 }
 .mail-main {
   display: flex;
@@ -875,14 +877,86 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.mail-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+}
 .mail-time {
   font-size: 10.5px;
   color: var(--text-3);
   white-space: nowrap;
 }
-/* 전문 드로어: inbox.json body 를 pre-wrap 텍스트로 */
-.mail-text {
-  margin-top: 16px;
+/* 분류 라벨(접수확인/서류/과제/면접/탈락): kind 없으면 생략 */
+.mail-kind {
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* ── 메일 모달: 중앙 정사각 640px, 메일 클라이언트 포맷 ── */
+.mail-modal {
+  position: fixed;
+  z-index: 50;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(640px, 94vw);
+  height: min(640px, 82vh);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+.mail-modal:focus-visible {
+  outline: none;
+}
+.mm-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px 24px 14px;
+}
+.mm-head h2 {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 0;
+}
+.mm-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 24px 20px;
+}
+.mm-meta {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.mm-meta > div {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.mm-meta dt {
+  flex: 0 0 60px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+.mm-meta dd {
+  margin: 0;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.mm-body {
+  margin-top: 14px;
   padding-top: 14px;
   border-top: 1px solid var(--border);
   color: var(--text-2);
@@ -890,12 +964,33 @@ button {
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
-.drawer-actions {
-  display: flex;
-  gap: 14px;
+.mm-reply {
   margin-top: 18px;
   padding-top: 14px;
   border-top: 1px solid var(--border);
+}
+.mm-reply-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-3);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin: 0 0 10px;
+}
+.mm-foot {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 12px 24px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+}
+.mm-note {
+  color: var(--text-3);
+  font-size: 11px;
+}
+.mm-note.err {
+  color: var(--danger);
 }
 
 /* 보낸 메일 소절: outbox 큐 최근 5건 — 시각 · 받는이 · 제목 · 상태 텍스트 */
@@ -927,13 +1022,126 @@ button {
   color: #c9655c;
 }
 
-/* ── 요청 컴포저 + 실행 원장 ── */
+/* ── 에이전트 뷰: 좌측 세션창 240px + 우측 본문 (Claude.ai 사이드바 모델) ── */
+.agent {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  margin: 2px -10px 0;
+  min-height: 60vh; /* 세션창 헤어라인이 본문 높이를 따라가도록 */
+}
+.agent-rail > * {
+  flex: none;
+}
+.agent-rail {
+  border-right: 1px solid var(--border);
+  padding-right: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.sess-new {
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 5px;
+  font-size: 11px;
+  color: var(--amber);
+  transition: background 120ms;
+}
+.sess-new:hover {
+  background: var(--bg-hover);
+}
+.sess-new.sel {
+  background: var(--bg-hover);
+}
+/* 세션 행: 제목 한 줄 + 시각·상태 한 줄. 선택 = bg-hover 1단 + 텍스트 톤 (윤곽선 금지) */
+.sess-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 5px;
+  min-width: 0;
+  transition: background 120ms;
+}
+.sess-row:hover {
+  background: var(--bg-hover);
+}
+.sess-row.sel {
+  background: var(--bg-hover);
+}
+.sess-title {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.sess-row.sel .sess-title {
+  color: var(--text);
+  font-weight: 600;
+}
+.sess-sub {
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.sess-empty {
+  padding: 4px 10px;
+}
+.agent-body {
+  padding: 2px 0 0 24px;
+  min-width: 0;
+}
+.agent-detail {
+  max-width: 640px;
+}
+.agent-block h3 {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-3);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin: 0 0 6px;
+  padding-top: 20px;
+}
+.agent-prompt {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+/* 진행 events tail: 러너가 게시한 마지막 5건 */
+.ev-tail {
+  font-size: 11px;
+  color: var(--text-2);
+}
+.ev-tail p {
+  margin: 0 0 3px;
+}
+.ev-at {
+  color: var(--text-3);
+}
+.ev-type {
+  color: var(--text-3);
+}
+
+/* ── 요청 컴포저 (에이전트 뷰 본문) ── */
 .req-form {
   display: flex;
   flex-direction: column;
   gap: 12px;
   max-width: 560px;
-  padding: 6px 10px 18px;
+  padding: 6px 0 18px;
 }
 .req-form label {
   display: flex;
@@ -976,12 +1184,6 @@ button {
 .req-submit {
   width: auto;
   padding: 7px 18px;
-}
-.req-runs-head {
-  margin-top: 8px;
-}
-.run-ev {
-  font-size: 11px;
 }
 .run-result {
   color: var(--text-2);
@@ -1078,15 +1280,63 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* 알림 행: 시각 · 사실 한 줄 · 출처. 미읽음 = 텍스트 톤 (윤곽선 마크 금지) */
+/* 알림 v3: 미처리|처리됨 mono 탭 — active = 텍스트 톤 (박스·언더라인 금지) */
+.notif-tabs {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.notif-tabs button {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  transition: color 120ms;
+}
+.notif-tabs button:hover {
+  color: var(--text-2);
+}
+.notif-tabs button.on {
+  color: var(--text);
+  font-weight: 600;
+}
+/* 날짜 그룹 헤더 (오늘/어제/MM-DD): wave 헤더 문법 */
+.notif-date {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  letter-spacing: 0.1em;
+  margin: 14px 0 2px;
+  padding: 0 10px;
+}
+.notif-date::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+/* 알림 행 = 대상 객체 입구: 시각 · 사실 · 출처 · (hover) 읽음. 미읽음 = 텍스트 톤 */
 .notif-row {
-  grid-template-columns: 78px 1fr auto;
+  grid-template-columns: 44px 1fr auto auto;
+  cursor: pointer;
 }
 .n-fact {
   color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.n-fact strong {
+  font-weight: 600;
+  color: inherit;
 }
 .n-src {
   font-size: 10.5px;
@@ -1103,61 +1353,29 @@ button {
 .notif-row.handled .n-fact {
   color: var(--text-3);
 }
-/* run 행: 시각 · 유형 · 경로 · 상태 · 프롬프트 */
-.run-row {
-  grid-template-columns: 78px 80px 130px 110px 1fr;
-  width: 100%;
+/* 개별 읽음: hover·키보드 진입 시에만 노출 */
+.notif-read {
   background: none;
   border: none;
-  text-align: left;
-  color: inherit;
-  font-family: inherit;
-}
-.run-type {
-  color: var(--text-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.run-path {
+  padding: 0;
   font-size: 10.5px;
   color: var(--text-3);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  visibility: hidden;
+  transition: color 120ms;
 }
-.run-status {
-  font-size: 11px;
+.notif-row:hover .notif-read,
+.notif-row:focus-within .notif-read {
+  visibility: visible;
+}
+.notif-read:hover {
   color: var(--text);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.run-status.done {
-  color: var(--text-3);
-}
-.run-status.failed {
-  color: #c9655c;
-}
-.run-prompt {
-  color: var(--text-3);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 @media (max-width: 760px) {
   .notif-row {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: 1fr auto auto;
   }
   .notif-row .p-time {
-    display: none;
-  }
-  .run-row {
-    grid-template-columns: 80px 110px 1fr;
-  }
-  .run-row .p-time,
-  .run-row .run-path {
     display: none;
   }
   .out-row {
@@ -1166,6 +1384,32 @@ button {
   .out-row .p-time,
   .out-row .out-subj {
     display: none;
+  }
+}
+
+/* 에이전트 뷰 모바일: 세션창을 상단 가로 스크롤 행으로 축약 */
+@media (max-width: 720px) {
+  .agent {
+    grid-template-columns: 1fr;
+  }
+  .agent-rail {
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 0 0 8px;
+    margin-bottom: 12px;
+  }
+  .sess-new {
+    flex: none;
+    align-self: center;
+  }
+  .sess-row {
+    flex: none;
+    width: 200px;
+  }
+  .agent-body {
+    padding-left: 0;
   }
 }
 
