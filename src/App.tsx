@@ -1433,7 +1433,9 @@ const FALLBACK_TYPES: RequestType[] = [
   { id: 'mail-check', label: '메일 확인', needs: 'scan', cwd: 'career-data' },
 ]
 
-const RUNNER_STALE_MS = 40 * 60 * 1000
+/* fail-closed staleness (평가 보완 ②): 러너 하트비트(5분)의 3배를 넘으면 상태를 신뢰하지 않는다.
+   stale이면 모든 콤보를 unknown으로 강등하고 제출을 차단 — 동결된 ready=true로 제출받지 않는다. */
+const RUNNER_STALE_MS = 15 * 60 * 1000
 
 export interface PendingReq {
   id: string
@@ -1574,12 +1576,14 @@ function AgentComposer({
   user,
   state,
   types,
+  stale,
   onSubmitted,
 }: {
   token: string
   user: string
   state: RunnerState | null
   types: RequestType[]
+  stale?: boolean
   onSubmitted: (p: PendingReq) => void
 }) {
   const combos = useMemo(() => state?.combos ?? [], [state])
@@ -1664,6 +1668,14 @@ function AgentComposer({
   }
 
   /* CC 입력부 문법: 컨피그 라인(유형·콤보·모델 inline select) 위, ❯ 텍스트영역 아래. 본문 하단 고정 */
+  /* fail-closed: 러너 상태가 오래되면 ready 표시를 신뢰하지 않고 제출을 막는다 */
+  if (stale)
+    return (
+      <div className="cc-composer">
+        <p className="plain-note">러너 상태가 오래됨 (하트비트 15분 초과) · 인증 상태 불명 — 제출 차단. Mac에서 launchd 확인.</p>
+      </div>
+    )
+
   return (
     <form
       className="cc-composer"
@@ -1843,6 +1855,7 @@ function AgentView({
           user={user}
           state={state}
           types={types}
+          stale={runnerStale}
           onSubmitted={(p) => {
             onPendingAdd(p)
             setSel(p.id)
