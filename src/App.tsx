@@ -143,6 +143,12 @@ function runStartMs(r: { started: string | null; id: string }): number {
   return Date.now()
 }
 
+/* 러너 run id 생성 규칙: REQ-{ts} → RUN-{ts}.
+   러너가 prompt 에 REQ 헤더를 더는 싣지 않아(## 요청 본문만) id 치환으로 결정론 매칭한다 */
+function runIdOf(reqId: string): string {
+  return reqId.replace('REQ-', 'RUN-')
+}
+
 function hhmm(iso: string): string {
   return new Date(iso).toTimeString().slice(0, 5)
 }
@@ -987,8 +993,8 @@ function MailModal({
   )
   const doneDraft = markerRuns.find((r) => r.status === 'done')
   const activeDraft = markerRuns.find((r) => r.status === 'running')
-  /* 이 모달에서 보낸 요청의 run — REQ id 가 프롬프트(큐 파일 헤더)에 박혀 정확히 매칭 */
-  const myRun = reqId ? markerRuns.find((r) => r.prompt.includes(reqId)) : undefined
+  /* 이 모달에서 보낸 요청의 run — 러너의 run id 규칙(REQ→RUN 치환)으로 매칭 */
+  const myRun = reqId ? (runner?.recent_runs ?? []).find((r) => r.id === runIdOf(reqId)) : undefined
   const myFailed = myRun?.status === 'failed' ? myRun : undefined
   const applied = appliedRunId !== null
   const waiting = !applied && !myFailed && (reqId !== null || !!activeDraft)
@@ -1169,6 +1175,23 @@ const MAIL_ACCOUNTS: Array<['gmail' | 'naver', string]> = [
   ['naver', 'NAVER'],
 ]
 
+/* 수동 동기 진행 — 러너가 단계별 커밋하는 sync-progress.json 을 4s 간격 직접 fetch */
+const SYNC_PROGRESS_PATH = 'data/mail/sync-progress.json'
+const SYNC_POLL_MS = 4000
+const SYNC_TIMEOUT_MS = 3 * 60 * 1000
+
+interface SyncProgress {
+  pct: number
+  phase: string
+  at: string
+}
+
+type SyncState =
+  | { kind: 'idle' }
+  | { kind: 'requesting' }
+  | { kind: 'polling'; since: number; pct: number; phase: string }
+  | { kind: 'done'; at: string }
+
 function MailView({
   token,
   user,
@@ -1190,8 +1213,7 @@ function MailView({
 }) {
   const [modal, setModal] = useState<MailModalState | null>(null)
   const closeModal = useCallback(() => setModal(null), [])
-  const [syncSnapshot, setSyncSnapshot] = useState<string | null>(null)
-  const [syncBusy, setSyncBusy] = useState(false)
+  const [sync, setSync] = useState<SyncState>({ kind: 'idle' })
   const [syncErr, setSyncErr] = useState<string | null>(null)
 
   const inbox = inboxEntry?.data ?? null
@@ -1209,13 +1231,8 @@ function MailView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus])
 
-  /* 동기 요청 후 synced_at 전진 감지 → 라벨 복귀 */
-  useEffect(() => {
-    if (syncSnapshot !== null && synced !== syncSnapshot) setSyncSnapshot(null)
-  }, [synced, syncSnapshot])
-
   const requestSync = async () => {
-    setSyncBusy(true)
+    setSync({ kind: 'requesting' })
     setSyncErr(null)
     try {
       const cur = await fetchJsonFile<{ requested_at: string }>(token, 'data/mail/sync-request.json')
@@ -1226,13 +1243,59 @@ function MailView({
         cur?.sha ?? null,
         `mail: sync request (board:${user})`,
       )
-      setSyncSnapshot(synced)
+      setSync({ kind: 'polling', since: Date.now(), pct: 0, phase: '요청됨' })
     } catch (e) {
       setSyncErr(e instanceof Error ? e.message : '동기 요청 실패')
-    } finally {
-      setSyncBusy(false)
+      setSync({ kind: 'idle' })
     }
   }
+
+  /* 진행 폴링: 스토어 캐시 우회 직접 fetch. 요청 시각 이후의 at 만 유효 — 이전 동기의 잔존 100% 무시 */
+  const pollingSince = sync.kind === 'polling' ? sync.since : null
+  useEffect(() => {
+    if (pollingSince === null) return
+    let live = true
+    let inFlight = false
+    const tick = async () => {
+      if (!live || inFlight) return
+      if (Date.now() - pollingSince > SYNC_TIMEOUT_MS) {
+        setSyncErr('응답 없음 · 러너 확인')
+        setSync({ kind: 'idle' })
+        return
+      }
+      inFlight = true
+      try {
+        const got = await fetchJsonFile<SyncProgress>(token, SYNC_PROGRESS_PATH)
+        if (!live || !got) return
+        const p = got.data
+        if (new Date(p.at).getTime() < pollingSince) return
+        if (p.pct >= 100) {
+          await revalidate(token, 'inbox').catch(() => {})
+          if (!live) return
+          setSync({ kind: 'done', at: hhmm(new Date().toISOString()) })
+          return
+        }
+        setSync({ kind: 'polling', since: pollingSince, pct: Math.max(Math.round(p.pct), 0), phase: p.phase })
+      } catch {
+        /* 일시 오류는 다음 폴링에서 재시도 */
+      } finally {
+        inFlight = false
+      }
+    }
+    void tick()
+    const t = window.setInterval(() => void tick(), SYNC_POLL_MS)
+    return () => {
+      live = false
+      window.clearInterval(t)
+    }
+  }, [token, pollingSince])
+
+  /* '동기 완료 HH:MM' 평문 3초 후 새로고침 라벨 복귀 */
+  useEffect(() => {
+    if (sync.kind !== 'done') return
+    const t = window.setTimeout(() => setSync({ kind: 'idle' }), 3000)
+    return () => window.clearTimeout(t)
+  }, [sync.kind])
 
   const groups = useMemo(() => {
     const msgs = inbox?.messages ?? []
@@ -1248,19 +1311,27 @@ function MailView({
     [outboxEntry],
   )
 
-  const syncPending = syncSnapshot !== null && synced === syncSnapshot
-
   return (
     <section className="mailbox" aria-label="메일함">
       <div className="mail-actions mono">
         <button type="button" className="text-action" onClick={() => setModal({ kind: 'compose' })}>
           새 메일
         </button>
-        {syncPending ? (
-          <span className="mail-note">동기 요청됨</span>
+        {sync.kind === 'polling' ? (
+          <span className="mail-note sync-progress">
+            <span className="sync-spinner" aria-hidden="true" />
+            {sync.pct}% · {sync.phase}
+          </span>
+        ) : sync.kind === 'done' ? (
+          <span className="mail-note">동기 완료 {sync.at}</span>
         ) : (
-          <button type="button" className="text-action" disabled={syncBusy} onClick={() => void requestSync()}>
-            {syncBusy ? '요청 중…' : '새로고침'}
+          <button
+            type="button"
+            className="text-action"
+            disabled={sync.kind === 'requesting'}
+            onClick={() => void requestSync()}
+          >
+            {sync.kind === 'requesting' ? '요청 중…' : '새로고침'}
           </button>
         )}
         {synced && <span className="mail-note">동기 {hhmm(synced)} 기준</span>}
@@ -1677,8 +1748,8 @@ function AgentView({
   const runs = useMemo(() => state?.recent_runs ?? [], [state])
 
   const sessions = useMemo<AgentSession[]>(() => {
-    /* 러너가 집행을 시작하면 같은 프롬프트의 대기 항목은 run 으로 흡수 */
-    const visiblePending = pending.filter((p) => !runs.some((r) => r.prompt === p.prompt))
+    /* 러너가 집행을 시작하면 해당 REQ 의 대기 항목은 run 으로 흡수 (run id = REQ id 의 RUN 치환) */
+    const visiblePending = pending.filter((p) => !runs.some((r) => r.id === runIdOf(p.id)))
     return [
       ...visiblePending.map((p) => ({ id: p.id, ms: new Date(p.at).getTime(), req: p })),
       ...runs.map((r) => ({ id: r.id, ms: runStartMs(r), run: r })),

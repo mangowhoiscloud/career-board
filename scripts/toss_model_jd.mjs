@@ -1,0 +1,10 @@
+import { chromium } from 'playwright'
+const browser = await chromium.launch()
+const page = await browser.newPage()
+await page.goto('https://toss.im/career/job-detail?job_id=7646941003&sub_position_id=7758217003', { waitUntil: 'networkidle', timeout: 45000 }).catch(()=>{})
+await page.waitForTimeout(3000)
+console.log('TITLE:', await page.title())
+const body = await page.locator('body').innerText()
+const i = body.indexOf('합류하게 될')
+console.log(body.slice(Math.max(0,i-300), i + 2600).replace(/\n{3,}/g, '\n\n'))
+await browser.close()

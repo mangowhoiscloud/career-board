@@ -805,6 +805,26 @@ button {
 .mail-note.err {
   color: var(--danger);
 }
+/* 수동 동기 진행 — 스피너 + 실시간 % (CLAUDE.md 스피너 예외 조항: 러너 sync-progress 기반) */
+.sync-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sync-spinner {
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--amber);
+  border-radius: 50%;
+  animation: sync-rotate 0.8s linear infinite;
+}
+@keyframes sync-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
 .mail-list {
   display: flex;
   flex-direction: column;
@@ -1584,6 +1604,10 @@ button {
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;
+  }
+  /* 회전 없이 % 텍스트만 */
+  .sync-spinner {
+    display: none;
   }
 }
 
