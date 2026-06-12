@@ -6,16 +6,16 @@ The application data (companies, statuses, documents) lives in a private reposit
 
 ## Start here
 
-- [Board](https://mangowhoiscloud.github.io/career-board/): the deployed shell. Renders nothing without a token; with one, a status ledger, Sankey funnel, and submission timeline
-- [Source](https://github.com/mangowhoiscloud/career-board): Vite + React 19 + TypeScript, GitHub Actions to Pages
-- [README](https://github.com/mangowhoiscloud/career-board/blob/main/README.md): why the shell and the data are split, and what the board refuses to log outside git
-- [DESIGN.md](https://github.com/mangowhoiscloud/career-board/blob/main/DESIGN.md): amber terminal-ledger design system. IBM Plex, one signal color, closed 10-word status vocabulary, rejected rows at full opacity
+- [Board](https://mangowhoiscloud.github.io/career/): the deployed shell. Renders nothing without a token; with one, a status ledger, Sankey funnel, and submission timeline
+- [Source](https://github.com/mangowhoiscloud/career): Vite + React 19 + TypeScript, GitHub Actions to Pages
+- [README](https://github.com/mangowhoiscloud/career/blob/main/README.md): why the shell and the data are split, and what the board refuses to log outside git
+- [DESIGN.md](https://github.com/mangowhoiscloud/career/blob/main/DESIGN.md): amber terminal-ledger design system. IBM Plex, one signal color, closed 10-word status vocabulary, rejected rows at full opacity
 
 ## How it works
 
-- [App](https://github.com/mangowhoiscloud/career-board/blob/main/src/App.tsx): the whole UI in one file: optimistic status updates with a 409 refetch-and-retry, automatic date stamp on submission, screening-hop insertion when a status jumps past document screening, stage-reached filtering
-- [Types](https://github.com/mangowhoiscloud/career-board/blob/main/src/types.ts): the application schema and the closed status vocabulary the board and the agents share
-- [API](https://github.com/mangowhoiscloud/career-board/blob/main/src/api.ts): GitHub Contents API reads and commits; document blobs open from the private repo through authenticated fetch
+- [App](https://github.com/mangowhoiscloud/career/blob/main/src/App.tsx): the whole UI in one file: optimistic status updates with a 409 refetch-and-retry, automatic date stamp on submission, screening-hop insertion when a status jumps past document screening, stage-reached filtering
+- [Types](https://github.com/mangowhoiscloud/career/blob/main/src/types.ts): the application schema and the closed status vocabulary the board and the agents share
+- [API](https://github.com/mangowhoiscloud/career/blob/main/src/api.ts): GitHub Contents API reads and commits; document blobs open from the private repo through authenticated fetch
 
 ## Related
 

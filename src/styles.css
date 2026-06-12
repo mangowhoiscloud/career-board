@@ -226,6 +226,11 @@ button {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+/* 알림 뷰 진입 상태: 뷰 토글과 같은 활성 톤 (텍스트 톤 600, 박스 없음) */
+.topbar-action.on {
+  color: var(--text);
+  font-weight: 600;
+}
 
 /* ── Overview: 퍼널 스파인 + 앵커 메트릭 ── */
 .overview {
@@ -933,6 +938,12 @@ button {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 0 24px 20px;
+  /* HTML 메일 프레임이 본문 영역을 채우도록 컬럼 플렉스 — 나머지 자식은 고정 높이 */
+  display: flex;
+  flex-direction: column;
+}
+.mm-scroll > * {
+  flex: none;
 }
 .mm-meta {
   margin: 0;
@@ -961,8 +972,19 @@ button {
   border-top: 1px solid var(--border);
   color: var(--text-2);
   font-size: 12.5px;
+  line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: break-word;
+}
+/* 새니타이즈드 HTML 메일: 흰 배경 메일 클라이언트 프레임 — 모달 본문 영역 채움 */
+.mail-frame {
+  flex: 1;
+  width: 100%;
+  min-height: 300px;
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #ffffff;
 }
 .mm-reply {
   margin-top: 18px;
@@ -1027,7 +1049,8 @@ button {
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
   margin: 2px -10px 0;
-  min-height: 60vh; /* 세션창 헤어라인이 본문 높이를 따라가도록 */
+  /* 세션창 헤어라인이 본문 높이를 따라가고, 새 요청 컴포저가 화면 하단에 앉도록 */
+  min-height: calc(100vh - 200px);
 }
 .agent-rail > * {
   flex: none;
@@ -1056,7 +1079,7 @@ button {
 .sess-new.sel {
   background: var(--bg-hover);
 }
-/* 세션 행: 제목 한 줄 + 시각·상태 한 줄. 선택 = bg-hover 1단 + 텍스트 톤 (윤곽선 금지) */
+/* 세션 행(CMUX): 상태 도트 + 제목 한 줄, 시각·상태 한 줄. 선택 = bg-hover 1단 + 텍스트 톤 (윤곽선 금지) */
 .sess-row {
   display: flex;
   flex-direction: column;
@@ -1075,6 +1098,11 @@ button {
 .sess-row.sel {
   background: var(--bg-hover);
 }
+.sess-line {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
 .sess-title {
   font-size: 12px;
   color: var(--text-2);
@@ -1092,6 +1120,7 @@ button {
   font-size: 10.5px;
   color: var(--text-3);
   white-space: nowrap;
+  padding-left: 15px; /* 도트(8px)+간격(7px)만큼 들여 제목과 정렬 */
 }
 .sess-empty {
   padding: 4px 10px;
@@ -1099,97 +1128,236 @@ button {
 .agent-body {
   padding: 2px 0 0 24px;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 .agent-detail {
-  max-width: 640px;
-}
-.agent-block h3 {
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--text-3);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  margin: 0 0 6px;
-  padding-top: 20px;
-}
-.agent-prompt {
-  margin: 0;
-  color: var(--text-2);
-  font-size: 12px;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-}
-/* 진행 events tail: 러너가 게시한 마지막 5건 */
-.ev-tail {
-  font-size: 11px;
-  color: var(--text-2);
-}
-.ev-tail p {
-  margin: 0 0 3px;
-}
-.ev-at {
-  color: var(--text-3);
-}
-.ev-type {
-  color: var(--text-3);
+  max-width: 680px;
 }
 
-/* ── 요청 컴포저 (에이전트 뷰 본문) ── */
-.req-form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-width: 560px;
-  padding: 6px 0 18px;
-}
-.req-form label {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
+/* ── 세션 트랜스크립트: Claude Code 문법 ── */
+/* 세션 헤더 라인: 콤보·모델·유형 (start 이벤트) */
+.cc-head {
+  margin: 4px 0 12px;
   font-size: 11px;
   color: var(--text-3);
 }
-.req-form input,
-.req-form select,
-.req-form textarea {
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  color: var(--text);
-  padding: 7px 10px;
+/* 프롬프트 에코: ❯ 프리픽스 mono 블록 */
+.cc-prompt {
+  display: flex;
+  gap: 9px;
+  margin: 0 0 12px;
   font-size: 12.5px;
-  font-family: inherit;
+  color: var(--text);
 }
-.req-form select:disabled {
+.cc-caret {
+  color: var(--amber);
+  flex: none;
+}
+.cc-prompt-text {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  min-width: 0;
+}
+/* 도구 호출 라인: ⏺ {ToolName} dim mono */
+.cc-tool {
+  margin: 3px 0;
+  font-size: 11.5px;
   color: var(--text-3);
 }
-.req-form input:focus,
-.req-form select:focus,
-.req-form textarea:focus {
-  outline: none;
-  border-color: var(--amber);
+/* 종료 푸터: ⏺ {n}자 산출 · HH:MM:SS */
+.cc-done {
+  margin: 12px 0 0;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.cc-error {
+  margin: 8px 0;
+  color: var(--danger);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.cc-text {
+  margin: 8px 0;
+}
+/* 결과 md: 트랜스크립트 마지막, 헤어라인 구분 */
+.cc-result {
+  margin: 14px 0 24px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── 마크다운 렌더: CC 터미널처럼 절제 — 코드블록 bg-panel mono, 헤딩 13px 600 ── */
+.md {
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow-wrap: break-word;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 14px 0 6px;
+}
+.md p {
+  margin: 6px 0;
+}
+.md ul,
+.md ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.md li {
+  margin: 2px 0;
+}
+.md strong {
+  color: var(--text);
+}
+.md code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--bg-panel);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.md pre {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+.md pre code {
+  background: none;
+  padding: 0;
+  font-size: 11.5px;
+}
+.md table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 12px;
+}
+.md th,
+.md td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+.md th {
+  color: var(--text);
+  font-weight: 600;
+}
+.md blockquote {
+  margin: 6px 0;
+  padding-left: 12px;
+  color: var(--text-3);
+}
+.md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+
+/* ── 새 요청 컴포저: CC 입력부 — 컨피그 라인 위, ❯ 입력 아래.
+   세션 상세를 보는 중에도 본문 하단 상시 고정 (sticky, 긴 트랜스크립트는 뒤로 스크롤) ── */
+.cc-composer {
+  position: sticky;
+  bottom: 0;
+  margin-top: auto;
+  width: 100%;
+  max-width: 720px;
+  padding: 14px 0 12px;
+  background: var(--bg);
 }
 /* not-ready 콤보 안내: "{label} — {reason} · {action}" 평문 한 줄 */
 .combo-note {
-  padding: 0;
-  margin-top: -6px;
+  padding: 0 0 6px;
   font-size: 11.5px;
 }
-.req-submit-row {
+.cc-box {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+.cc-box:focus-within {
+  border-color: var(--amber);
+}
+/* 컨피그 라인: 유형·콤보·모델 inline select — CC 상태줄 */
+.cc-config {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 8px;
+  padding: 9px 12px 0;
+  font-size: 11px;
+  color: var(--text-3);
 }
-.req-submit {
-  width: auto;
-  padding: 7px 18px;
-}
-.run-result {
+.cc-config select {
+  background: none;
+  border: none;
+  padding: 0;
   color: var(--text-2);
-  font-size: 12px;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
+  font-family: var(--mono);
+  font-size: 11px;
+  max-width: 200px;
+}
+.cc-config select:hover {
+  color: var(--text);
+}
+.cc-config select:disabled {
+  color: var(--text-3);
+}
+.cc-config select:focus {
+  outline: none;
+  color: var(--text);
+}
+.cc-config-sep {
+  color: var(--border-strong);
+}
+.cc-input {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 12px 11px;
+}
+.cc-input .cc-caret {
+  line-height: 1.5;
+}
+.cc-input textarea {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  resize: vertical;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.cc-input textarea:focus {
+  outline: none; /* 포커스는 cc-box 보더가 표시 */
+}
+.cc-input textarea::placeholder {
+  color: var(--text-3);
+  font-family: var(--sans);
+}
+.cc-run {
+  flex: none;
+  line-height: 1.5;
+  font-size: 11.5px;
 }
 
 /* ── Toast ── */

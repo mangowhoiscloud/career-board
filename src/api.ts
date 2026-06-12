@@ -124,6 +124,8 @@ export interface InboxMessage {
   company?: string | null
   kind?: string | null
   body: string
+  /* text/plain 파트가 없던 메일만: 서버측 새니타이즈된 HTML 원문 (40KB 캡) */
+  html?: string
 }
 export interface InboxData {
   synced_at: string

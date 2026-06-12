@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, fetchJsonFile, fetchTextFile,
   markNotificationsRead, putJsonFile, whoami,
   type InboxData, type InboxMessage, type NotifFile, type Notification, type OutboxData, type OutboxItem,
-  type RequestType, type RunnerRun, type RunnerState,
+  type RequestType, type RunEvent, type RunnerRun, type RunnerState,
 } from './api'
 import { clearStore, patchEntry, prefetchAll, revalidate, useEntry, type Entry, type StoreKey } from './store'
 import type { Application, BoardData, Status } from './types'
@@ -13,7 +15,33 @@ const TOKEN_KEY = 'career-board:token'
 const COMBO_KEY = 'agentCombo'
 const MODEL_KEY = 'agentModel'
 type Toast = { kind: 'ok' | 'err'; text: string } | null
-type View = 'board' | 'mail' | 'agent'
+type View = 'board' | 'mail' | 'agent' | 'notif'
+
+/* 트랜스크립트·결과 마크다운 — CC 터미널처럼 절제된 렌더, 외부 링크만 앰버 */
+function Md({ text }: { text: string }) {
+  return (
+    <div className="md">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ node: _n, ...props }) => <a target="_blank" rel="noreferrer" {...props} />,
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  )
+}
+
+/* 에이전트 초안 산출물 파서: 첫 줄 "제목: …" + 빈 줄 + 본문. 형식 불일치면 전문을 본문으로 */
+function parseDraft(text: string): { subject?: string; body: string } {
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  const m = (lines[0] ?? '').trim().match(/^제목\s*[::]\s*(.+)$/)
+  if (!m) return { body: text.trim() }
+  let i = 1
+  while (i < lines.length && lines[i].trim() === '') i += 1
+  return { subject: m[1].trim(), body: lines.slice(i).join('\n').trim() }
+}
 
 const BOARD_SLUGS: Array<[string, string]> = [
   ['ashbyhq', 'ashby'],
@@ -63,6 +91,32 @@ function dateLabel(iso: string): string {
   if (diff === 0) return '오늘'
   if (diff === 1) return '어제'
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/* 메일 텍스트 정돈: 제로폭 문자 제거 · 줄별 trim · 3+ 연속 빈 줄 → 1 · 앞뒤 공백 제거 */
+function cleanMailText(s: string): string {
+  return s
+    .replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((l) => l.trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+/* 목록 스니펫용 한 줄 정돈: 제로폭·연속 공백 제거 */
+function cleanMailLine(s: string): string {
+  return s.replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, '').replace(/\s+/g, ' ').trim()
+}
+
+/* HTML 메일 srcDoc: <base target=_blank> + 기본 스타일 주입. 풀 문서면 head 에, 조각이면 래핑 */
+function mailSrcDoc(html: string): string {
+  const inject =
+    '<base target="_blank"><style>body{margin:12px;font:13px -apple-system,sans-serif;color:#222}</style>'
+  const head = html.match(/<head[^>]*>/i)
+  if (head) return html.replace(head[0], head[0] + inject)
+  return `<!doctype html><html><head><meta charset="utf-8">${inject}</head><body>${html}</body></html>`
 }
 
 /* "이름 <addr>" 헤더 파싱 */
@@ -786,7 +840,7 @@ function MailComposeForm({
   token: string
   user: string
   prefill?: { account: string; to: string; subject: string; in_reply_to?: string }
-  fill?: { text: string; ts: number }
+  fill?: { subject?: string; body: string; ts: number }
   onQueued: () => void
 }) {
   const [account, setAccount] = useState(prefill?.account ?? 'gmail')
@@ -799,9 +853,11 @@ function MailComposeForm({
 
   useEffect(() => () => window.clearTimeout(armTimer.current), [])
 
-  /* 에이전트 초안 채우기: 초안 텍스트를 본문 textarea 에 삽입 */
+  /* 에이전트 초안: 제목 필드 교체(파싱 성공 시) + 본문 textarea 채움 */
   useEffect(() => {
-    if (fill) setBody(fill.text)
+    if (!fill) return
+    setBody(fill.body)
+    if (fill.subject) setSubject(fill.subject)
   }, [fill])
 
   const ready = to.trim().length > 0 && subject.trim().length > 0 && body.trim().length > 0
@@ -905,10 +961,11 @@ function MailModal({
   const ref = useDialog(onClose)
   const msg = state.kind === 'message' ? state.msg : null
   const [replyOpen, setReplyOpen] = useState(false)
-  const [fill, setFill] = useState<{ text: string; ts: number } | undefined>(undefined)
+  const [fill, setFill] = useState<{ subject?: string; body: string; ts: number } | undefined>(undefined)
   const [fillBusy, setFillBusy] = useState(false)
   const [draftBusy, setDraftBusy] = useState(false)
-  const [draftRequested, setDraftRequested] = useState(false)
+  const [reqId, setReqId] = useState<string | null>(null)
+  const [appliedRunId, setAppliedRunId] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const replyRef = useRef<HTMLDivElement>(null)
 
@@ -916,14 +973,48 @@ function MailModal({
     if (replyOpen) replyRef.current?.scrollIntoView({ block: 'nearest' })
   }, [replyOpen])
 
+  /* 모달이 열려 있는 동안 러너 상태 15s 재검증 — 초안 완료를 자리에서 감지 */
+  useEffect(() => {
+    if (!msg) return
+    const t = window.setInterval(() => void revalidate(token, 'runner-state').catch(() => {}), 15000)
+    return () => window.clearInterval(t)
+  }, [token, msg])
+
   const marker = msg ? `[mail-reply:${msg.account}:${msg.id}]` : ''
   const markerRuns = useMemo(
-    () => (marker ? (runner?.recent_runs ?? []).filter((r) => r.prompt.startsWith(marker)) : []),
+    () => (marker ? (runner?.recent_runs ?? []).filter((r) => r.prompt.includes(marker)) : []),
     [runner, marker],
   )
   const doneDraft = markerRuns.find((r) => r.status === 'done')
   const activeDraft = markerRuns.find((r) => r.status === 'running')
-  const requested = draftRequested || !!activeDraft
+  /* 이 모달에서 보낸 요청의 run — REQ id 가 프롬프트(큐 파일 헤더)에 박혀 정확히 매칭 */
+  const myRun = reqId ? markerRuns.find((r) => r.prompt.includes(reqId)) : undefined
+  const myFailed = myRun?.status === 'failed' ? myRun : undefined
+  const applied = appliedRunId !== null
+  const waiting = !applied && !myFailed && (reqId !== null || !!activeDraft)
+
+  const applyDraft = useCallback(
+    async (run: RunnerRun) => {
+      if (!run.output) throw new Error('산출물 경로 없음')
+      const text = await fetchTextFile(token, run.output)
+      const parsed = parseDraft(text)
+      setReplyOpen(true)
+      setFill({ ...parsed, ts: Date.now() })
+    },
+    [token],
+  )
+
+  /* 마커 일치 done run 도착 → 산출물 fetch → 제목·본문 자동 채움 */
+  useEffect(() => {
+    if (!reqId || applied) return
+    const done = myRun?.status === 'done' ? myRun : undefined
+    if (!done) return
+    setAppliedRunId(done.id)
+    applyDraft(done).catch((e) => {
+      setAppliedRunId(null)
+      setNote(e instanceof Error ? e.message : '초안 로드 실패')
+    })
+  }, [reqId, applied, myRun, applyDraft])
 
   const requestDraft = async () => {
     if (!msg) return
@@ -936,7 +1027,7 @@ function MailModal({
       const id = `REQ-${ts}`
       const prompt = [
         marker,
-        '아래 메일에 한국어로 답장 초안을 작성해. 발송하지 말고 본문 텍스트만.',
+        "아래 메일에 대한 한국어 답장을 작성해. 출력 형식: 첫 줄은 '제목: …', 빈 줄 하나, 그 다음 본문 텍스트만. 발송하지 않는다.",
         '',
         `보낸이: ${msg.from}`,
         `제목: ${msg.subject}`,
@@ -945,7 +1036,9 @@ function MailModal({
       ].join('\n')
       const body = reqFileBody({ id, typeId: 'mail-reply', label: '메일 답장 초안', combo, model, user, prompt })
       await createFile(token, `requests/${id}.md`, body, `request: 메일 답장 초안 (board:${user})`)
-      setDraftRequested(true)
+      setReqId(id)
+      setAppliedRunId(null)
+      setReplyOpen(true)
     } catch (e) {
       setNote(e instanceof Error ? e.message : '요청 실패')
     } finally {
@@ -953,18 +1046,13 @@ function MailModal({
     }
   }
 
+  /* 수동 '초안 채우기': 완료된 초안을 동일 파서로 제목+본문에 적용 */
   const fillDraft = async () => {
     if (!doneDraft) return
-    if (!doneDraft.output) {
-      setNote('산출물 경로 없음')
-      return
-    }
     setFillBusy(true)
     setNote(null)
     try {
-      const text = await fetchTextFile(token, doneDraft.output)
-      setReplyOpen(true)
-      setFill({ text, ts: Date.now() })
+      await applyDraft(doneDraft)
     } catch (e) {
       setNote(e instanceof Error ? e.message : '초안 로드 실패')
     } finally {
@@ -1013,7 +1101,12 @@ function MailModal({
                   <dd className="mono">{msg.account}</dd>
                 </div>
               </dl>
-              <div className="mm-body">{msg.body || '(본문 없음)'}</div>
+              {msg.html ? (
+                /* text/plain 없던 메일: 새니타이즈드 HTML 원문을 격리 프레임으로 (sandbox="" — 스크립트·폼 차단) */
+                <iframe className="mail-frame" sandbox="" srcDoc={mailSrcDoc(msg.html)} title="메일 본문" />
+              ) : (
+                <div className="mm-body">{cleanMailText(msg.body) || '(본문 없음)'}</div>
+              )}
               {replyOpen && (
                 <div className="mm-reply" ref={replyRef}>
                   <h3 className="mm-reply-label mono">답장</h3>
@@ -1042,18 +1135,21 @@ function MailModal({
             <button type="button" className="text-action" onClick={() => setReplyOpen((v) => !v)}>
               답장
             </button>
-            {requested ? (
-              <span className="mm-note">초안 요청됨 · 에이전트 탭</span>
+            {applied ? (
+              <span className="mm-note">초안 적용됨</span>
+            ) : waiting ? (
+              <span className="mm-note">초안 생성 중 · 최대 수 분</span>
             ) : (
               <button type="button" className="text-action" disabled={draftBusy} onClick={() => void requestDraft()}>
                 {draftBusy ? '요청 중…' : '에이전트 초안'}
               </button>
             )}
-            {doneDraft && (
+            {doneDraft && !applied && (
               <button type="button" className="text-action" disabled={fillBusy} onClick={() => void fillDraft()}>
                 {fillBusy ? '불러오는 중…' : '초안 채우기'}
               </button>
             )}
+            {myFailed && <span className="mm-note err">초안 실패: {myFailed.error || 'exit 1'}</span>}
             {note && <span className="mm-note err">{note}</span>}
           </footer>
         )}
@@ -1200,7 +1296,7 @@ function MailView({
                         <span className="mail-from">{fromName(m.from)}</span>
                         <span className="mail-subj">{m.subject || '(제목 없음)'}</span>
                       </span>
-                      <span className="mail-snip">{m.snippet || '–'}</span>
+                      <span className="mail-snip">{cleanMailLine(m.snippet) || '–'}</span>
                     </span>
                     <span className="mail-right">
                       <span className="mail-time mono">{fmtWhen(m.at * 1000)}</span>
@@ -1254,6 +1350,7 @@ function MailView({
    ════════════════════════════════════════════════════════════════ */
 
 const FALLBACK_TYPES: RequestType[] = [
+  { id: 'terminal', label: '터미널', needs: 'files', cwd: 'resume' },
   { id: 'research', label: '회사·JD 리서치', needs: 'research', cwd: 'career-data' },
   { id: 'explore', label: '공고 탐색', needs: 'research', cwd: 'career-data' },
   { id: 'coverletter', label: '커버레터', needs: 'files', cwd: 'resume' },
@@ -1285,7 +1382,7 @@ function typeLabelOf(types: RequestType[], id: string): string {
   return types.find((t) => t.id === id)?.label ?? id
 }
 
-/* 완료 run 산출물: reports/runs/*.md PAT fetch */
+/* 완료 run 산출물: reports/runs/*.md PAT fetch → 트랜스크립트 마지막에 마크다운 렌더 */
 function RunOutput({ token, run }: { token: string; run: RunnerRun }) {
   const [output, setOutput] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -1302,70 +1399,89 @@ function RunOutput({ token, run }: { token: string; run: RunnerRun }) {
   if (!run.output) return <p className="plain-note">산출물 경로 없음</p>
   if (err) return <p className="plain-note err">{err}</p>
   if (output === null) return <p className="plain-note">불러오는 중…</p>
-  return <div className="run-result">{output}</div>
+  return (
+    <div className="cc-result">
+      <Md text={output} />
+    </div>
+  )
 }
 
+/* 풀 트랜스크립트: 완료·실패 run 은 reports/runs/*.events.jsonl 아카이브를 PAT fetch.
+   파일이 없거나(실패 run 은 output 경로가 없다) 실행 중이면 events_tail(최대 30건) 폴백 */
+function useRunEvents(token: string, run: RunnerRun | undefined): RunEvent[] {
+  const [full, setFull] = useState<{ id: string; events: RunEvent[] } | null>(null)
+  const archive = run && run.status !== 'running' && run.output ? run.output.replace(/\.md$/, '.events.jsonl') : null
+  const runId = run?.id
+  useEffect(() => {
+    if (!runId || !archive) return
+    let live = true
+    fetchTextFile(token, archive)
+      .then((txt) => {
+        if (!live) return
+        const events = txt
+          .split('\n')
+          .filter((l) => l.trim())
+          .map((l) => JSON.parse(l) as RunEvent)
+        setFull({ id: runId, events })
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [token, runId, archive])
+  if (run && full?.id === run.id) return full.events
+  return run?.events_tail ?? []
+}
+
+/* 세션 트랜스크립트 — Claude Code 문법: 헤더 라인 → ❯ 프롬프트 에코 → ⏺ 이벤트 스트림 → 결과 */
 function SessionDetail({ token, session, types }: { token: string; session: AgentSession; types: RequestType[] }) {
   const run = session.run
   const req = session.req
+  const events = useRunEvents(token, run)
+  const startEv = events.find((e) => e.type === 'start')
+  const stream = events.filter((e) => e.type !== 'start')
+  const head =
+    startEv?.text ??
+    `${run?.combo ?? req?.combo ?? '–'}/${run?.model ?? req?.model ?? '–'} · ${typeLabelOf(types, run?.type ?? req?.type ?? '')}`
+
   return (
     <div className="agent-detail">
-      <dl className="drawer-meta">
-        <div>
-          <dt>유형</dt>
-          <dd>{typeLabelOf(types, run?.type ?? req?.type ?? '')}</dd>
-        </div>
-        <div>
-          <dt>경로</dt>
-          <dd className="mono">{run ? (run.combo ?? '–') : req?.combo}</dd>
-        </div>
-        <div>
-          <dt>모델</dt>
-          <dd className="mono">{run?.model ?? req?.model}</dd>
-        </div>
-        {run?.started && (
-          <div>
-            <dt>시작</dt>
-            <dd className="mono">{fmtHistoryAt(run.started)}</dd>
+      <p className="cc-head mono">{head}</p>
+      <div className="cc-prompt mono">
+        <span className="cc-caret" aria-hidden="true">❯</span>
+        <span className="cc-prompt-text">{run?.prompt ?? req?.prompt}</span>
+      </div>
+      {stream.map((ev, i) => {
+        if (ev.type === 'tool')
+          return (
+            <p key={i} className="cc-tool mono">
+              ⏺ {ev.text}
+            </p>
+          )
+        if (ev.type === 'done')
+          return (
+            <p key={i} className="cc-done mono">
+              ⏺ {ev.text} · {ev.at}
+            </p>
+          )
+        if (ev.type === 'error')
+          return (
+            <p key={i} className="cc-error">
+              {ev.text}
+            </p>
+          )
+        return (
+          <div key={i} className="cc-text">
+            <Md text={ev.text} />
           </div>
-        )}
-        {run?.ended && (
-          <div>
-            <dt>종료</dt>
-            <dd className="mono">{fmtHistoryAt(run.ended)}</dd>
-          </div>
-        )}
-      </dl>
-
-      <section className="agent-block">
-        <h3>프롬프트</h3>
-        <p className="agent-prompt">{run?.prompt ?? req?.prompt}</p>
-      </section>
-
-      {run?.events_tail && run.events_tail.length > 0 && (
-        <section className="agent-block">
-          <h3>진행</h3>
-          <div className="ev-tail mono">
-            {run.events_tail.map((ev, i) => (
-              <p key={i}>
-                <span className="ev-at">{ev.at}</span> <span className="ev-type">{ev.type}</span> {ev.text}
-              </p>
-            ))}
-          </div>
-        </section>
-      )}
-
+        )
+      })}
       {req && <p className="plain-note">대기 중 · 러너 주기 60초</p>}
       {run?.status === 'running' && (
         <p className="plain-note">실행 중{run.started ? ` · 시작 ${hhmm(run.started)}` : ''}</p>
       )}
-      {run?.status === 'failed' && <p className="plain-note err">{run.error || '실패 사유 없음'}</p>}
-      {run?.status === 'done' && (
-        <section className="agent-block">
-          <h3>결과</h3>
-          <RunOutput token={token} run={run} />
-        </section>
-      )}
+      {run?.status === 'failed' && <p className="cc-error">{run.error || '실패 사유 없음'}</p>}
+      {run?.status === 'done' && <RunOutput token={token} run={run} />}
     </div>
   )
 }
@@ -1384,9 +1500,11 @@ function AgentComposer({
   onSubmitted: (p: PendingReq) => void
 }) {
   const combos = useMemo(() => state?.combos ?? [], [state])
-  const [typeId, setTypeId] = useState(types[0]?.id ?? 'research')
+  /* 기본 유형 = terminal (CC 프롬프트 관성) — 러너 목록에 없으면 첫 유형 */
+  const defaultType = (list: RequestType[]) => list.find((t) => t.id === 'terminal')?.id ?? list[0]?.id ?? ''
+  const [typeId, setTypeId] = useState(() => defaultType(types))
   useEffect(() => {
-    if (!types.some((t) => t.id === typeId)) setTypeId(types[0]?.id ?? '')
+    if (!types.some((t) => t.id === typeId)) setTypeId(defaultType(types))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [types])
 
@@ -1462,67 +1580,76 @@ function AgentComposer({
     }
   }
 
+  /* CC 입력부 문법: 컨피그 라인(유형·콤보·모델 inline select) 위, ❯ 텍스트영역 아래. 본문 하단 고정 */
   return (
     <form
-      className="req-form"
+      className="cc-composer"
       onSubmit={(e) => {
         e.preventDefault()
         void submit()
       }}
     >
-      <label>
-        유형
-        <select name="type" value={typeId} onChange={(e) => setTypeId(e.target.value)}>
-          {types.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        실행 경로
-        <select name="combo" value={comboId} onChange={(e) => setComboId(e.target.value)} disabled={eligible.length === 0}>
-          {eligible.length === 0 && <option value="">사용 가능한 경로 없음</option>}
-          {eligible.map((c) => (
-            <option key={c.id} value={c.id} disabled={!c.ready}>
-              {c.label}
-            </option>
-          ))}
-        </select>
-      </label>
       {notReady.map((c) => (
         <p key={c.id} className="plain-note combo-note">
           {c.label} — {c.reason ?? '사용 불가'}
           {c.action ? ` · ${c.action}` : ''}
         </p>
       ))}
-      <label>
-        모델
-        <select name="model" value={modelId} onChange={(e) => setModelId(e.target.value)} disabled={!combo}>
-          {!combo && <option value="">–</option>}
-          {combo?.models.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        프롬프트
-        <textarea
-          name="prompt"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          rows={6}
-          placeholder="요청 내용…"
-        />
-      </label>
-      <div className="req-submit-row">
-        <button type="submit" className="compose-submit req-submit" disabled={busy || !prompt.trim() || !combo}>
-          {busy ? '등록 중…' : '요청 등록'}
-        </button>
-        {note && <span className="plain-note">{note}</span>}
+      {note && <p className="plain-note err">{note}</p>}
+      <div className="cc-box">
+        <div className="cc-config mono">
+          <select name="type" value={typeId} onChange={(e) => setTypeId(e.target.value)} aria-label="유형">
+            {types.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+          <span className="cc-config-sep" aria-hidden="true">·</span>
+          <select
+            name="combo"
+            value={comboId}
+            onChange={(e) => setComboId(e.target.value)}
+            disabled={eligible.length === 0}
+            aria-label="실행 경로"
+          >
+            {eligible.length === 0 && <option value="">사용 가능한 경로 없음</option>}
+            {eligible.map((c) => (
+              <option key={c.id} value={c.id} disabled={!c.ready}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+          <span className="cc-config-sep" aria-hidden="true">·</span>
+          <select name="model" value={modelId} onChange={(e) => setModelId(e.target.value)} disabled={!combo} aria-label="모델">
+            {!combo && <option value="">–</option>}
+            {combo?.models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="cc-input">
+          <span className="cc-caret" aria-hidden="true">❯</span>
+          <textarea
+            name="prompt"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            onKeyDown={(e) => {
+              /* Enter 제출 + Cmd/Ctrl+Enter 병행, Shift+Enter 줄바꿈. 한글 IME 조합 중엔 보류 */
+              if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return
+              e.preventDefault()
+              void submit()
+            }}
+            rows={3}
+            placeholder="새 요청…"
+            aria-label="프롬프트"
+          />
+          <button type="submit" className="text-action cc-run" disabled={busy || !prompt.trim() || !combo}>
+            {busy ? '등록 중…' : '실행'}
+          </button>
+        </div>
       </div>
     </form>
   )
@@ -1573,9 +1700,27 @@ function AgentView({
   const aliveAt = state?.runner_alive_at ? new Date(state.runner_alive_at).getTime() : null
   const runnerStale = aliveAt !== null && Date.now() - aliveAt > RUNNER_STALE_MS
 
+  /* 세션창 키보드 ↑↓ 순회 (CMUX 세션 이동) — 선택과 포커스가 같이 움직인다 */
+  const railRef = useRef<HTMLElement>(null)
+  const onRailKey = (e: React.KeyboardEvent) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+    e.preventDefault()
+    const order = ['new', ...sessions.map((s) => s.id)]
+    const i = Math.max(order.indexOf(sel), 0)
+    const ni = Math.min(Math.max(i + (e.key === 'ArrowDown' ? 1 : -1), 0), order.length - 1)
+    setSel(order[ni])
+    railRef.current?.querySelectorAll('button')[ni]?.focus()
+  }
+
+  const sessDot = (s: AgentSession): string => {
+    if (s.run?.status === 'running') return 'var(--amber)'
+    if (s.run?.status === 'failed') return 'var(--danger)'
+    return 'var(--text-3)'
+  }
+
   return (
     <section className="agent" aria-label="에이전트">
-      <nav className="agent-rail" aria-label="세션">
+      <nav className="agent-rail" aria-label="세션" ref={railRef} onKeyDown={onRailKey}>
         <button type="button" className={`sess-new mono${sel === 'new' ? ' sel' : ''}`} onClick={() => setSel('new')}>
           + 새 요청
         </button>
@@ -1589,7 +1734,10 @@ function AgentView({
               className={`sess-row${sel === s.id ? ' sel' : ''}`}
               onClick={() => setSel(s.id)}
             >
-              <span className="sess-title">{title}</span>
+              <span className="sess-line">
+                <span className="dot sess-dot" style={{ background: sessDot(s) }} aria-hidden="true" />
+                <span className="sess-title">{title}</span>
+              </span>
               <span className="sess-sub mono">
                 {fmtWhen(s.ms)} · {statusText}
               </span>
@@ -1605,20 +1753,18 @@ function AgentView({
         {runnerStale && state && (
           <p className="plain-note">러너 마지막 응답 {fmtHistoryAt(state.runner_alive_at)} · Mac에서 launchd 확인</p>
         )}
-        {sel === 'new' || !selected ? (
-          <AgentComposer
-            token={token}
-            user={user}
-            state={state}
-            types={types}
-            onSubmitted={(p) => {
-              onPendingAdd(p)
-              setSel(p.id)
-            }}
-          />
-        ) : (
-          <SessionDetail token={token} session={selected} types={types} />
-        )}
+        {sel !== 'new' && selected && <SessionDetail token={token} session={selected} types={types} />}
+        {/* 터미널 REPL: 세션을 보는 중에도 입력부는 본문 하단 상시 — 입력하면 새 REQ 세션 생성·선택 */}
+        <AgentComposer
+          token={token}
+          user={user}
+          state={state}
+          types={types}
+          onSubmitted={(p) => {
+            onPendingAdd(p)
+            setSel(p.id)
+          }}
+        />
       </div>
     </section>
   )
@@ -1639,7 +1785,6 @@ export default function App() {
   const [openId, setOpenId] = useState<string | null>(null)
 
   const [view, setView] = useState<View>('board')
-  const [notifOpen, setNotifOpen] = useState(false)
   const [mailFocus, setMailFocus] = useState<{ subject: string; ts: number } | undefined>(undefined)
   const [agentFocus, setAgentFocus] = useState<{ runId: string; ts: number } | undefined>(undefined)
   const [pendingReqs, setPendingReqs] = useState<PendingReq[]>([])
@@ -1707,6 +1852,7 @@ export default function App() {
       board: ['applications', 'notifications'],
       mail: ['inbox', 'outbox', 'notifications', 'runner-state'],
       agent: ['runner-state', 'notifications'],
+      notif: ['notifications'],
     }
     const t = window.setInterval(() => {
       for (const k of VIEW_KEYS[view]) void revalidate(token, k).catch(() => {})
@@ -1725,9 +1871,29 @@ export default function App() {
 
   const apps = useMemo(() => board?.applications ?? [], [board])
 
+  /* 알림 행 클릭 = 읽음 + 대상 객체로 이동: 낙관적 handled 패치 후 비동기 커밋 */
+  const readOnNavigate = useCallback(
+    (n: Notification) => {
+      if (n.handled || !token) return
+      const cur = notifEntry
+      if (cur?.data) {
+        patchEntry<NotifFile>(
+          'notifications',
+          { ...cur.data, items: cur.data.items.map((i) => (i.id === n.id ? { ...i, handled: true } : i)) },
+          cur.sha,
+        )
+      }
+      markNotificationsRead(token, [n.id], user || 'unknown')
+        .then(() => revalidate(token, 'notifications').catch(() => {}))
+        .catch(() => void revalidate(token, 'notifications').catch(() => {}))
+    },
+    [token, user, notifEntry],
+  )
+
   /* 알림 행 = 대상 객체의 입구 (Linear 원칙) */
   const navigateFromNotif = useCallback(
     (n: Notification) => {
+      readOnNavigate(n)
       if (n.kind?.startsWith('run') && n.runId) {
         setView('agent')
         setAgentFocus({ runId: n.runId, ts: Date.now() })
@@ -1745,7 +1911,7 @@ export default function App() {
       }
       if (n.statusChange || n.appId) setView('board')
     },
-    [apps],
+    [apps, readOnNavigate],
   )
 
   const changeStatus = useCallback(
@@ -1886,10 +2052,6 @@ export default function App() {
 
   const unreadCount = notifItems.filter((n) => !n.handled).length
 
-  const notifSection = notifOpen && (
-    <NotifSection items={notifItems} onRead={readNotifs} onNavigate={navigateFromNotif} />
-  )
-
   return (
     <main className="board">
       <header className="topbar">
@@ -1918,10 +2080,9 @@ export default function App() {
         <div className="topbar-right mono">
           <button
             type="button"
-            className="topbar-action"
-            aria-expanded={notifOpen}
-            aria-controls="panel-notif"
-            onClick={() => setNotifOpen((v) => !v)}
+            className={`topbar-action${view === 'notif' ? ' on' : ''}`}
+            aria-pressed={view === 'notif'}
+            onClick={() => setView('notif')}
           >
             알림{unreadCount > 0 ? ` ${unreadCount}` : ''}
           </button>
@@ -1945,33 +2106,29 @@ export default function App() {
         </div>
       </header>
 
-      {view === 'mail' ? (
-        <>
-          {notifSection}
-          <MailView
-            token={token}
-            user={user}
-            inboxEntry={inboxEntry}
-            outboxEntry={outboxEntry}
-            runner={runnerEntry?.data ?? null}
-            focus={mailFocus}
-            onFocusDone={() => setMailFocus(undefined)}
-            onQueued={() => void revalidate(token, 'outbox').catch(() => {})}
-          />
-        </>
+      {view === 'notif' ? (
+        <NotifSection items={notifItems} onRead={readNotifs} onNavigate={navigateFromNotif} />
+      ) : view === 'mail' ? (
+        <MailView
+          token={token}
+          user={user}
+          inboxEntry={inboxEntry}
+          outboxEntry={outboxEntry}
+          runner={runnerEntry?.data ?? null}
+          focus={mailFocus}
+          onFocusDone={() => setMailFocus(undefined)}
+          onQueued={() => void revalidate(token, 'outbox').catch(() => {})}
+        />
       ) : view === 'agent' ? (
-        <>
-          {notifSection}
-          <AgentView
-            token={token}
-            user={user}
-            runnerEntry={runnerEntry}
-            pending={pendingReqs}
-            onPendingAdd={(p) => setPendingReqs((cur) => [...cur, p])}
-            focus={agentFocus}
-            onFocusDone={() => setAgentFocus(undefined)}
-          />
-        </>
+        <AgentView
+          token={token}
+          user={user}
+          runnerEntry={runnerEntry}
+          pending={pendingReqs}
+          onPendingAdd={(p) => setPendingReqs((cur) => [...cur, p])}
+          focus={agentFocus}
+          onFocusDone={() => setAgentFocus(undefined)}
+        />
       ) : (
         <>
           <section className="overview" aria-label="파이프라인 요약">
@@ -2002,8 +2159,6 @@ export default function App() {
               )}
             </div>
           </section>
-
-          {notifSection}
 
           <section className="insights" aria-label="시각화">
             <div className="viz">
