@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { fetchNotifications, markNotificationsHandled, type Notification, listRequests, type AgentRequest, commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, whoami } from './api'
+import { fetchNotifications, markNotificationsHandled, type Notification, commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, whoami } from './api'
+import {
+  cachedProviders, checkDaemonHealth, fetchProviders, getDaemonToken, setDaemonToken,
+  mailList, mailMessage, mailScan, mailSend, notifList, notifRead,
+  runCreate, runDetail, runsList, runStop,
+  type MailListItem, type MailListResult, type MailMessage, type ProvidersPayload, type RequestType, type RunDetail, type RunSummary,
+} from './opsd'
 import type { Application, BoardData, Status } from './types'
 import { STATUS_COLOR, STATUS_LABEL, STATUS_ORDER } from './types'
 
@@ -29,34 +35,53 @@ function channelLabel(url?: string, channel?: string): string {
   }
 }
 
-/* 알림 kind → 도트 색. status 팔레트 재사용 (rejection=dim red, receipt=submitted gray). */
-const NOTIF_KIND_DOT: Record<string, string> = {
-  rejection: '#a04a45',
-  receipt: '#c9c9cf',
-  interview: '#f08c00',
-  assignment: '#e8a33d',
-}
-function notifKindTone(kind: string): 'rejection' | 'receipt' | 'other' {
-  return kind === 'rejection' || kind === 'receipt' ? kind : 'other'
-}
-
-/* 요청 큐 status → 도트 색. pending=앰버, processing=screening 옐로, done=muted, failed=danger. */
-const QUEUE_DOT: Record<string, string> = {
-  pending: '#e8a33d',
-  processing: '#e9c46a',
-  done: '#6b6b72',
-  failed: '#b3514d',
-}
-function queueTone(s: string): 'pending' | 'processing' | 'done' | 'failed' {
-  return s === 'processing' || s === 'done' || s === 'failed' ? s : 'pending'
-}
-
 function todayLocal(): string {
   return new Intl.DateTimeFormat('sv-SE').format(new Date())
 }
 
 function fmtHistoryAt(iso: string): string {
   return new Date(iso).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' })
+}
+
+/* 시각 표기: 오늘이면 HH:MM, 아니면 MM-DD */
+function fmtWhen(ms: number): string {
+  const d = new Date(ms)
+  const now = new Date()
+  if (d.toDateString() === now.toDateString()) return d.toTimeString().slice(0, 5)
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function mmss(ms: number): string {
+  const t = Math.max(0, Math.floor(ms / 1000))
+  return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`
+}
+
+/* "이름 <addr>" 헤더 파싱 */
+function fromName(s: string): string {
+  const m = s.match(/^"?([^"<]*)"?\s*</)
+  const name = m?.[1]?.trim()
+  return name || s.replace(/[<>]/g, '').trim()
+}
+function fromAddr(s: string): string {
+  return s.match(/<([^>]+)>/)?.[1] ?? s.trim()
+}
+
+/* run 시작 시각: started 우선, 없으면 id 의 RUN-YYMMDDHHMMSS 타임스탬프 */
+function runStartMs(r: { started: string | null; id: string }): number {
+  if (r.started) return new Date(r.started).getTime()
+  const m = r.id.match(/^RUN-(\d{12})/)
+  if (m) {
+    const s = m[1]
+    return new Date(
+      2000 + Number(s.slice(0, 2)), Number(s.slice(2, 4)) - 1, Number(s.slice(4, 6)),
+      Number(s.slice(6, 8)), Number(s.slice(8, 10)), Number(s.slice(10, 12)),
+    ).getTime()
+  }
+  return Date.now()
+}
+
+function authAbbr(auth: string): string {
+  return auth === 'subscription' ? 'sub' : auth === 'api_key' ? 'key' : auth
 }
 
 function statusTone(s: Status): 'muted' | 'active' | 'closed' {
@@ -594,71 +619,515 @@ function TokenGate({ onSubmit, error }: { onSubmit: (t: string) => void; error: 
   )
 }
 
-function Composer({
-  user,
-  token,
-  onClose,
-  toast,
-}: {
-  user: string
-  token: string
-  onClose: () => void
-  toast: (t: Toast) => void
-}) {
-  const [reqType, setReqType] = useState('package')
-  const [reqUrl, setReqUrl] = useState('')
-  const [reqNote, setReqNote] = useState('')
-  const [busy, setBusy] = useState(false)
-  const ref = useDialog(onClose)
+/* ════════════════════════════════════════════════════════════════
+   알림 — 메트릭 아래 고정 원장 섹션. 시각 · 사실 한 줄 · 출처.
+   액션은 모두 읽음 하나. 파생 액션 없음 (알림은 피드일 뿐).
+   ════════════════════════════════════════════════════════════════ */
 
-  const submit = async () => {
-    if (!reqUrl.trim() && reqType !== 'mail-check' && reqType !== 'explore') return
-    setBusy(true)
-    const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12)
-    const typeLabel: Record<string, string> = {
-      package: '지원 패키지 제작 (풀세트)',
-      coverletter: '커버레터·지원동기 작성',
-      research: '회사·JD 리서치',
-      explore: '공고 탐색 (에이전트 직군 스윕)',
-      'mail-check': '메일 확인·전형 결과 환류',
-      submit: '제출 실행 (메일 지원·폼 준비)',
+function notifSource(source: string): string {
+  return source === 'gmail' || source === 'naver' ? 'mail' : source
+}
+
+function NotifSection({
+  items,
+  onReadAll,
+}: {
+  items: Notification[] | null
+  onReadAll: () => Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const unread = items?.filter((n) => !n.handled).length ?? 0
+  return (
+    <section id="panel-notif" className="panel" aria-label="알림">
+      <div className="panel-head">
+        <span className="panel-title">알림</span>
+        {items && items.length > 0 && (
+          <span className={`panel-count${unread > 0 ? ' alert' : ''}`}>
+            {unread > 0 ? `${unread} 미읽음` : `${items.length}`}
+          </span>
+        )}
+        <span className="panel-rule" aria-hidden="true" />
+        {unread > 0 && (
+          <button
+            type="button"
+            className="panel-action"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true)
+              setErr(null)
+              onReadAll()
+                .catch((e) => setErr(e instanceof Error ? e.message : '읽음 처리 실패'))
+                .finally(() => setBusy(false))
+            }}
+          >
+            {busy ? '처리 중…' : '모두 읽음'}
+          </button>
+        )}
+      </div>
+      {err && <p className="panel-empty">{err}</p>}
+      {items === null ? (
+        <p className="panel-empty">불러오는 중…</p>
+      ) : items.length === 0 ? (
+        <p className="panel-empty">없음</p>
+      ) : (
+        <div className="panel-rows" role="list">
+          {items.slice(0, 20).map((n) => (
+            <div key={n.id} role="listitem" className={`panel-row notif-row${n.handled ? ' handled' : ''}`}>
+              <span className="p-time mono">{n.at.slice(5, 16).replace('T', ' ')}</span>
+              <span className="n-fact">
+                {n.company ? `${n.company} · ` : ''}
+                {n.subject}
+                {n.statusChange ? ` · ${n.statusChange}` : ''}
+              </span>
+              <span className="n-src mono">{notifSource(n.source)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+/* ════════════════════════════════════════════════════════════════
+   설정 — 로컬 데몬 토큰 (PAT 게이트와 동일 UX, 입력 필드 1개)
+   ════════════════════════════════════════════════════════════════ */
+
+function SettingsSection({
+  daemon,
+  dToken,
+  onSave,
+}: {
+  daemon: 'checking' | 'live' | 'offline'
+  dToken: string | null
+  onSave: (t: string) => void
+}) {
+  const [value, setValue] = useState(dToken ?? '')
+  return (
+    <section className="panel" aria-label="설정">
+      <div className="panel-head">
+        <span className="panel-title">설정</span>
+        <span className="panel-count">
+          {daemon === 'live' ? '데몬 연결됨 · 127.0.0.1:8787' : daemon === 'offline' ? '데몬 오프라인' : '확인 중…'}
+        </span>
+        <span className="panel-rule" aria-hidden="true" />
+      </div>
+      <form
+        className="settings-form"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (value.trim()) onSave(value.trim())
+        }}
+      >
+        <input
+          type="password"
+          name="daemonToken"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="로컬 데몬 토큰 (~/.config/career-ops/daemon.json)"
+          aria-label="로컬 데몬 토큰"
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <button type="submit" disabled={!value.trim()}>
+          저장
+        </button>
+      </form>
+    </section>
+  )
+}
+
+/* ════════════════════════════════════════════════════════════════
+   메일함 — opsd 경유 Gmail+Naver 통합. 큐 모드에서는 알림 요약만.
+   ════════════════════════════════════════════════════════════════ */
+
+type MailDrawerState =
+  | { kind: 'message'; account: string; id: string }
+  | { kind: 'compose'; prefill?: { account: string; to: string; subject: string; in_reply_to?: string; thread_id?: string } }
+
+function MailComposeForm({
+  dToken,
+  prefill,
+  onSent,
+}: {
+  dToken: string
+  prefill?: { account: string; to: string; subject: string; in_reply_to?: string; thread_id?: string }
+  onSent: () => void
+}) {
+  const [account, setAccount] = useState(prefill?.account ?? 'gmail')
+  const [to, setTo] = useState(prefill?.to ?? '')
+  const [subject, setSubject] = useState(prefill?.subject ?? '')
+  const [body, setBody] = useState('')
+  const [phase, setPhase] = useState<'idle' | 'armed' | 'sending' | 'sent'>('idle')
+  const [sentAt, setSentAt] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+  const armTimer = useRef<number | undefined>(undefined)
+
+  useEffect(() => () => window.clearTimeout(armTimer.current), [])
+
+  const ready = to.trim().length > 0 && subject.trim().length > 0 && body.trim().length > 0
+
+  const onSendClick = async () => {
+    if (phase === 'idle') {
+      setErr(null)
+      setPhase('armed')
+      armTimer.current = window.setTimeout(() => setPhase((p) => (p === 'armed' ? 'idle' : p)), 5000)
+      return
     }
-    const deliverables: Record<string, string> = {
-      package: '이력서 PDF + 경력기술서 + 자기소개서 + 공고 요구 txt — Downloads·docs/ 동기화·보드 ready 등록',
-      coverletter: '커버레터 PDF·txt (이력서 수치 반복 금지 규칙 적용)',
-      research: '트랜스크립트 (JD 분석·자산 매핑·갭·공명점)',
-      explore: '라이브 실측 공고 목록 + 우선순위 + 메모리 영속화. 기본 스윕 = Anthropic·OpenAI 등 에이전트 직군 + 세션 탐색 스캐폴드 재사용',
-      'mail-check': 'Gmail 스캔으로 접수확인·탈락·서류통과를 분류해 보드 상태 전환 커밋(agent:mail-scan)으로 환류',
-      submit: '메일 지원 대상 = Gmail API 로 첨부 발송, 폼 대상 = 페이지 오픈 + 첨부 세트·입력안 안내',
-    }
-    const body = [
-      `# REQ-${ts} · ${typeLabel[reqType]}`,
-      '',
-      `- type: ${reqType}`,
-      `- url: ${reqUrl.trim() || '(없음)'}`,
-      `- deliverables: ${deliverables[reqType]}`,
-      `- requested-by: board:${user}`,
-      `- requested-at: ${new Date().toISOString()}`,
-      `- status: pending`,
-      '',
-      '## 메모',
-      '',
-      reqNote.trim() || '(없음)',
-      '',
-      '> 처리 규약: 로컬 Claude Code 세션(구독 쿼터)이 requests/ 를 확인하고 resume-production 파이프라인으로 처리한다.',
-      '> 완료 시 status: done 으로 수정하고 산출물 경로를 기재한다.',
-      '',
-    ].join('\n')
+    if (phase !== 'armed') return
+    window.clearTimeout(armTimer.current)
+    setPhase('sending')
     try {
-      await createFile(token, `requests/REQ-${ts}.md`, body, `request: ${typeLabel[reqType]} (board:${user})`)
-      toast({ kind: 'ok', text: `요청 등록됨 · REQ-${ts}` })
-      onClose()
+      await mailSend(dToken, {
+        account,
+        to: to.trim(),
+        subject: subject.trim(),
+        body,
+        ...(prefill?.in_reply_to ? { in_reply_to: prefill.in_reply_to } : {}),
+        ...(prefill?.thread_id ? { thread_id: prefill.thread_id } : {}),
+      })
+      setSentAt(new Date().toTimeString().slice(0, 5))
+      setPhase('sent')
+      onSent()
     } catch (e) {
-      toast({ kind: 'err', text: e instanceof Error ? e.message : '요청 실패' })
-    } finally {
-      setBusy(false)
+      setErr(e instanceof Error ? e.message : '발송 실패')
+      setPhase('idle')
     }
   }
+
+  return (
+    <div className="compose-form">
+      <label>
+        보내는 계정
+        <select name="account" value={account} onChange={(e) => setAccount(e.target.value)} disabled={phase === 'sent'}>
+          <option value="gmail">gmail</option>
+          <option value="naver">naver</option>
+        </select>
+      </label>
+      <label>
+        받는 사람
+        <input
+          type="email"
+          name="to"
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          placeholder="addr@example.com"
+          spellCheck={false}
+          disabled={phase === 'sent'}
+        />
+      </label>
+      <label>
+        제목
+        <input type="text" name="subject" value={subject} onChange={(e) => setSubject(e.target.value)} disabled={phase === 'sent'} />
+      </label>
+      <label>
+        본문
+        <textarea name="body" value={body} onChange={(e) => setBody(e.target.value)} rows={10} disabled={phase === 'sent'} />
+      </label>
+      {phase === 'sent' ? (
+        <p className="plain-note">발송됨 · {sentAt}</p>
+      ) : (
+        <button type="button" className="compose-submit" disabled={!ready || phase === 'sending'} onClick={() => void onSendClick()}>
+          {phase === 'armed' ? '발송 확정' : phase === 'sending' ? '발송 중…' : '발송'}
+        </button>
+      )}
+      {err && <p className="plain-note err">발송 실패: {err}</p>}
+    </div>
+  )
+}
+
+function MailDrawer({
+  dToken,
+  state,
+  onClose,
+  onReply,
+  onSent,
+}: {
+  dToken: string
+  state: MailDrawerState
+  onClose: () => void
+  onReply: (m: MailMessage) => void
+  onSent: () => void
+}) {
+  const ref = useDialog(onClose)
+  const [msg, setMsg] = useState<MailMessage | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (state.kind !== 'message') return
+    setMsg(null)
+    setErr(null)
+    mailMessage(dToken, state.account, state.id)
+      .then(setMsg)
+      .catch((e) => setErr(e instanceof Error ? e.message : '메일 로드 실패'))
+  }, [dToken, state])
+
+  const isCompose = state.kind === 'compose'
+  return (
+    <>
+      <div className="drawer-backdrop" onClick={onClose} aria-hidden="true" />
+      <aside
+        className="drawer drawer-mail"
+        role="dialog"
+        aria-modal="true"
+        aria-label={isCompose ? '메일 작성' : '메일 전문'}
+        ref={ref as React.RefObject<HTMLElement>}
+        tabIndex={-1}
+      >
+        <header className="drawer-head">
+          <div>
+            <h2>{isCompose ? (state.prefill?.in_reply_to ? '답장' : '새 메일') : msg?.subject ?? '메일'}</h2>
+            {!isCompose && msg && <p className="drawer-role">{msg.from}</p>}
+          </div>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="닫기 (Esc)">
+            esc
+          </button>
+        </header>
+
+        {isCompose ? (
+          <MailComposeForm dToken={dToken} prefill={state.prefill} onSent={onSent} />
+        ) : err ? (
+          <p className="plain-note err">{err}</p>
+        ) : !msg ? (
+          <p className="plain-note">불러오는 중…</p>
+        ) : (
+          <>
+            <dl className="drawer-meta">
+              <div>
+                <dt>보낸이</dt>
+                <dd>{msg.from}</dd>
+              </div>
+              <div>
+                <dt>받는이</dt>
+                <dd>{msg.to || '–'}</dd>
+              </div>
+              <div>
+                <dt>시각</dt>
+                <dd className="mono">{new Date(msg.at * 1000).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' })}</dd>
+              </div>
+              <div>
+                <dt>계정</dt>
+                <dd className="mono">{msg.account}</dd>
+              </div>
+            </dl>
+            {msg.html ? (
+              <iframe className="mail-frame" sandbox="" srcDoc={msg.html} title="메일 본문" />
+            ) : (
+              <div className="mail-text">{msg.text || '(본문 없음)'}</div>
+            )}
+            <div className="drawer-actions">
+              <button type="button" className="text-action" onClick={() => onReply(msg)}>
+                답장
+              </button>
+            </div>
+          </>
+        )}
+      </aside>
+    </>
+  )
+}
+
+function MailView({
+  live,
+  dToken,
+  queueNotifs,
+}: {
+  live: boolean
+  dToken: string | null
+  queueNotifs: Notification[] | null
+}) {
+  const [list, setList] = useState<MailListResult | null>(null)
+  const [loadErr, setLoadErr] = useState<string | null>(null)
+  const [scanNote, setScanNote] = useState<string | null>(null)
+  const [scanning, setScanning] = useState(false)
+  const [drawer, setDrawer] = useState<MailDrawerState | null>(null)
+  const enabled = live && !!dToken
+
+  const load = useCallback(async () => {
+    if (!dToken) return
+    try {
+      setList(await mailList(dToken, 25))
+      setLoadErr(null)
+    } catch (e) {
+      setLoadErr(e instanceof Error ? e.message : '메일 목록 로드 실패')
+    }
+  }, [dToken])
+
+  useEffect(() => {
+    if (enabled) void load()
+  }, [enabled, load])
+
+  if (!enabled) {
+    const mailNotifs = (queueNotifs ?? []).filter((n) => notifSource(n.source) === 'mail')
+    return (
+      <section className="mailbox" aria-label="메일함">
+        <p className="plain-note">
+          {live ? '데몬 토큰 없음 · 설정에서 입력' : '로컬 데몬 오프라인 · 메일은 데스크톱에서'}
+        </p>
+        {mailNotifs.length > 0 && (
+          <div className="panel-rows" role="list">
+            {mailNotifs.slice(0, 20).map((n) => (
+              <div key={n.id} role="listitem" className={`panel-row notif-row${n.handled ? ' handled' : ''}`}>
+                <span className="p-time mono">{n.at.slice(5, 16).replace('T', ' ')}</span>
+                <span className="n-fact">
+                  {n.company ? `${n.company} · ` : ''}
+                  {n.subject}
+                </span>
+                <span className="n-src mono">{notifSource(n.source)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    )
+  }
+
+  return (
+    <section className="mailbox" aria-label="메일함">
+      <div className="mail-actions mono">
+        <button type="button" className="text-action" onClick={() => setDrawer({ kind: 'compose' })}>
+          새 메일
+        </button>
+        <span className="sep">·</span>
+        <button
+          type="button"
+          className="text-action"
+          disabled={scanning}
+          onClick={() => {
+            if (!dToken) return
+            setScanning(true)
+            setScanNote(null)
+            mailScan(dToken)
+              .then((r) => {
+                setScanNote(`스캔 완료 · 신규 ${r.new_notifications}`)
+                void load()
+              })
+              .catch((e) => setScanNote(e instanceof Error ? e.message : '스캔 실패'))
+              .finally(() => setScanning(false))
+          }}
+        >
+          {scanning ? '스캔 중…' : '스캔'}
+        </button>
+        {scanNote && <span className="mail-note">{scanNote}</span>}
+      </div>
+
+      {loadErr && <p className="plain-note err">{loadErr}</p>}
+      {list?.errors.gmail && <p className="plain-note">gmail: {list.errors.gmail}</p>}
+      {list?.errors.naver && <p className="plain-note">naver: {list.errors.naver}</p>}
+
+      {list === null && !loadErr ? (
+        <p className="plain-note">불러오는 중…</p>
+      ) : list && list.messages.length === 0 ? (
+        <p className="plain-note">없음</p>
+      ) : (
+        <div className="mail-list" role="list">
+          {list?.messages.map((m: MailListItem) => (
+            <button
+              key={`${m.account}-${m.id}`}
+              type="button"
+              role="listitem"
+              className={`mail-row${m.unread ? ' unread' : ''}`}
+              onClick={() => setDrawer({ kind: 'message', account: m.account, id: m.id })}
+            >
+              <span className="mail-acct mono" aria-label={m.account}>
+                {m.account === 'gmail' ? 'G' : 'N'}
+              </span>
+              <span className="mail-main">
+                <span className="mail-top">
+                  <span className="mail-from">{fromName(m.from)}</span>
+                  <span className="mail-subj">{m.subject || '(제목 없음)'}</span>
+                </span>
+                <span className="mail-snip">{m.snippet || '–'}</span>
+              </span>
+              <span className="mail-time mono">{fmtWhen(m.at * 1000)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {drawer && dToken && (
+        <MailDrawer
+          dToken={dToken}
+          state={drawer}
+          onClose={() => setDrawer(null)}
+          onSent={() => void load()}
+          onReply={(m) =>
+            setDrawer({
+              kind: 'compose',
+              prefill: {
+                account: m.account,
+                to: fromAddr(m.from),
+                subject: m.subject.startsWith('Re:') ? m.subject : `Re: ${m.subject}`,
+                in_reply_to: m.message_id,
+                ...(m.thread_id ? { thread_id: m.thread_id } : {}),
+              },
+            })
+          }
+        />
+      )}
+    </section>
+  )
+}
+
+/* ════════════════════════════════════════════════════════════════
+   요청 — 컴포저(유형·실행 경로·모델·프롬프트) + 최근 runs 원장
+   라이브 = POST /runs 즉시 실행, 큐 모드 = requests/ PAT 커밋(runner 블록 포함)
+   ════════════════════════════════════════════════════════════════ */
+
+const FALLBACK_TYPES: RequestType[] = [
+  { id: 'research', label: '회사·JD 리서치', needs: 'research', cwd: 'career-data' },
+  { id: 'explore', label: '공고 탐색', needs: 'research', cwd: 'career-data' },
+  { id: 'coverletter', label: '커버레터', needs: 'files', cwd: 'resume' },
+  { id: 'package', label: '지원 패키지', needs: 'files', cwd: 'resume' },
+  { id: 'submit', label: '제출 준비', needs: 'files', cwd: 'resume' },
+  { id: 'mail-check', label: '메일 확인', needs: 'scan', cwd: 'career-data' },
+]
+
+function runStatusText(r: RunSummary, now: number): string {
+  if (r.status === 'running') return `실행 중 ${mmss(now - runStartMs(r))}`
+  if (r.status === 'failed') return '실패'
+  return '완료'
+}
+
+function RunDrawer({
+  dToken,
+  id,
+  onClose,
+  onChanged,
+}: {
+  dToken: string
+  id: string
+  onClose: () => void
+  onChanged: () => void
+}) {
+  const ref = useDialog(onClose)
+  const [detail, setDetail] = useState<RunDetail | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [stopping, setStopping] = useState(false)
+
+  const load = useCallback(() => {
+    runDetail(dToken, id)
+      .then(setDetail)
+      .catch((e) => setErr(e instanceof Error ? e.message : 'run 로드 실패'))
+  }, [dToken, id])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  useEffect(() => {
+    if (detail?.status !== 'running') return
+    const t = window.setInterval(load, 3000)
+    return () => window.clearInterval(t)
+  }, [detail?.status, load])
+
+  const statusLine = detail
+    ? detail.status === 'running'
+      ? '실행 중'
+      : detail.status === 'failed'
+        ? `실패${typeof detail.exit === 'number' ? ` · exit ${detail.exit}` : ''}`
+        : '완료'
+    : ''
 
   return (
     <>
@@ -667,66 +1136,343 @@ function Composer({
         className="drawer"
         role="dialog"
         aria-modal="true"
-        aria-label="에이전트 작업 요청"
+        aria-label={`run ${id}`}
         ref={ref as React.RefObject<HTMLElement>}
         tabIndex={-1}
       >
         <header className="drawer-head">
           <div>
-            <h2>에이전트 작업 요청</h2>
-            <p className="drawer-role">requests/ 에 커밋되어 로컬 Claude Code 세션(구독 쿼터)이 처리합니다</p>
+            <h2 className="mono">{id}</h2>
+            {detail && <p className="drawer-role">{statusLine}</p>}
           </div>
           <button type="button" className="drawer-close" onClick={onClose} aria-label="닫기 (Esc)">
             esc
           </button>
         </header>
-        <form
-          className="compose-form"
-          onSubmit={(e) => {
-            e.preventDefault()
-            void submit()
-          }}
-        >
-          <label>
-            유형
-            <select name="type" value={reqType} onChange={(e) => setReqType(e.target.value)}>
-              <option value="package">지원 패키지 제작 (풀세트)</option>
-              <option value="coverletter">커버레터·지원동기 작성</option>
-              <option value="research">회사·JD 리서치</option>
-              <option value="explore">공고 탐색 (에이전트 직군 스윕)</option>
-              <option value="mail-check">메일 확인·전형 결과 환류</option>
-              <option value="submit">제출 실행 (메일 지원·폼 준비)</option>
-            </select>
-          </label>
-          <label>
-            공고 URL
-            <input
-              type="url"
-              name="url"
-              value={reqUrl}
-              onChange={(e) => setReqUrl(e.target.value)}
-              placeholder="https://…"
-              spellCheck={false}
-            />
-          </label>
-          <label>
-            메모
-            <textarea
-              name="note"
-              value={reqNote}
-              onChange={(e) => setReqNote(e.target.value)}
-              rows={4}
-              placeholder="강조 축, 마감일 등…"
-            />
-          </label>
-          <button type="submit" className="compose-submit" disabled={busy || !reqUrl.trim()}>
-            {busy ? '등록 중…' : '요청 등록'}
-          </button>
-        </form>
+
+        {err ? (
+          <p className="plain-note err">{err}</p>
+        ) : !detail ? (
+          <p className="plain-note">불러오는 중…</p>
+        ) : (
+          <>
+            <dl className="drawer-meta">
+              <div>
+                <dt>유형</dt>
+                <dd>{detail.spec.type}</dd>
+              </div>
+              <div>
+                <dt>경로</dt>
+                <dd className="mono">
+                  {detail.spec.provider}/{authAbbr(detail.spec.auth)} · {detail.spec.model}
+                </dd>
+              </div>
+              {detail.started && (
+                <div>
+                  <dt>시작</dt>
+                  <dd className="mono">{fmtHistoryAt(detail.started)}</dd>
+                </div>
+              )}
+              {detail.ended && (
+                <div>
+                  <dt>종료</dt>
+                  <dd className="mono">{fmtHistoryAt(detail.ended)}</dd>
+                </div>
+              )}
+            </dl>
+
+            <section className="drawer-notes">
+              <h3>프롬프트</h3>
+              <p>{detail.spec.prompt}</p>
+            </section>
+
+            <section className="drawer-history">
+              <h3>이벤트</h3>
+              {detail.events_tail.length === 0 ? (
+                <p className="mono">없음</p>
+              ) : (
+                detail.events_tail.map((ev, i) => (
+                  <p key={i} className="mono run-ev">
+                    {ev.at} {ev.type} · {ev.text}
+                  </p>
+                ))
+              )}
+            </section>
+
+            {detail.result && (
+              <section className="drawer-notes">
+                <h3>결과</h3>
+                <div className="run-result">{detail.result}</div>
+              </section>
+            )}
+
+            {detail.status === 'running' && (
+              <div className="drawer-actions">
+                <button
+                  type="button"
+                  className="text-action"
+                  disabled={stopping}
+                  onClick={() => {
+                    setStopping(true)
+                    runStop(dToken, id)
+                      .then(() => {
+                        load()
+                        onChanged()
+                      })
+                      .catch((e) => setErr(e instanceof Error ? e.message : '중단 실패'))
+                      .finally(() => setStopping(false))
+                  }}
+                >
+                  {stopping ? '중단 중…' : '중단'}
+                </button>
+              </div>
+            )}
+          </>
+        )}
       </aside>
     </>
   )
 }
+
+function RequestSection({
+  live,
+  dToken,
+  providers,
+  user,
+  patToken,
+}: {
+  live: boolean
+  dToken: string | null
+  providers: ProvidersPayload | null
+  user: string
+  patToken: string
+}) {
+  const catalog = providers ?? cachedProviders()
+  const types = catalog?.request_types?.length ? catalog.request_types : FALLBACK_TYPES
+  const combos = catalog?.combos ?? []
+
+  const [typeId, setTypeId] = useState(types[0]?.id ?? 'research')
+  const needs = types.find((t) => t.id === typeId)?.needs
+  const eligible = useMemo(
+    () => combos.filter((c) => needs !== 'files' || c.capabilities.includes('files')),
+    [combos, needs],
+  )
+  const [comboId, setComboId] = useState<string>(() => eligible.find((c) => c.ready)?.id ?? '')
+  const combo = eligible.find((c) => c.id === comboId)
+  const [modelId, setModelId] = useState<string>(
+    () => combo?.models.find((m) => m.default)?.id ?? combo?.models[0]?.id ?? '',
+  )
+  const [prompt, setPrompt] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+  const [runs, setRuns] = useState<RunSummary[] | null>(null)
+  const [openRun, setOpenRun] = useState<string | null>(null)
+  const [now, setNow] = useState(() => Date.now())
+
+  /* 유형 변경으로 현재 콤보가 부적격해지면 첫 ready 콤보로 */
+  useEffect(() => {
+    if (!eligible.some((c) => c.id === comboId && c.ready)) {
+      setComboId(eligible.find((c) => c.ready)?.id ?? '')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eligible])
+
+  /* 콤보 변경 시 기본 모델 선반영 */
+  useEffect(() => {
+    setModelId(combo?.models.find((m) => m.default)?.id ?? combo?.models[0]?.id ?? '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comboId])
+
+  const liveReady = live && !!dToken
+
+  const loadRuns = useCallback(async () => {
+    if (!dToken) return
+    try {
+      setRuns(await runsList(dToken))
+    } catch {
+      /* 목록 로드 실패는 다음 폴링에서 재시도 */
+    }
+  }, [dToken])
+
+  useEffect(() => {
+    if (liveReady) void loadRuns()
+  }, [liveReady, loadRuns])
+
+  const anyRunning = runs?.some((r) => r.status === 'running') ?? false
+
+  /* 5s 폴링 + 경과 시계: 실행 중일 때만 */
+  useEffect(() => {
+    if (!liveReady || !anyRunning) return
+    const poll = window.setInterval(() => void loadRuns(), 5000)
+    const tick = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => {
+      window.clearInterval(poll)
+      window.clearInterval(tick)
+    }
+  }, [liveReady, anyRunning, loadRuns])
+
+  const submit = async () => {
+    if (!prompt.trim()) return
+    setBusy(true)
+    setNote(null)
+    try {
+      if (liveReady && dToken && combo) {
+        const id = await runCreate(dToken, {
+          type: typeId,
+          provider: combo.provider,
+          auth: combo.auth,
+          model: modelId,
+          prompt: prompt.trim(),
+        })
+        setPrompt('')
+        setNote(`실행 시작 · ${id}`)
+        await loadRuns()
+      } else {
+        const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12)
+        const label = types.find((t) => t.id === typeId)?.label ?? typeId
+        const runner = combo
+          ? { provider: combo.provider, auth: combo.auth, model: modelId }
+          : { provider: 'anthropic', auth: 'subscription', model: null }
+        const body = [
+          `# REQ-${ts} · ${label}`,
+          '',
+          `- type: ${typeId}`,
+          `- runner: ${JSON.stringify(runner)}`,
+          `- requested-by: board:${user}`,
+          `- requested-at: ${new Date().toISOString()}`,
+          `- status: pending`,
+          '',
+          '## 요청',
+          '',
+          prompt.trim(),
+          '',
+          '> 처리 규약: opsd 또는 로컬 세션이 requests/ 를 확인해 처리한다. 완료 시 status: done 으로 수정하고 산출물 경로를 기재한다.',
+          '',
+        ].join('\n')
+        await createFile(patToken, `requests/REQ-${ts}.md`, body, `request: ${label} (board:${user})`)
+        setPrompt('')
+        setNote(`요청 등록됨 · REQ-${ts}`)
+      }
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : '요청 실패')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section id="panel-req" className="panel" aria-label="요청">
+      <div className="panel-head">
+        <span className="panel-title">요청</span>
+        <span className="panel-count">{liveReady ? '라이브 · 즉시 실행' : '큐 모드 · requests/ 커밋'}</span>
+        <span className="panel-rule" aria-hidden="true" />
+      </div>
+
+      <form
+        className="req-form"
+        onSubmit={(e) => {
+          e.preventDefault()
+          void submit()
+        }}
+      >
+        <label>
+          유형
+          <select name="type" value={typeId} onChange={(e) => setTypeId(e.target.value)}>
+            {types.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          실행 경로
+          <select name="combo" value={comboId} onChange={(e) => setComboId(e.target.value)} disabled={eligible.length === 0}>
+            {eligible.length === 0 && <option value="">카탈로그 없음 · 데몬 1회 연결 필요</option>}
+            {eligible.map((c) => (
+              <option key={c.id} value={c.id} disabled={!c.ready}>
+                {c.label}
+                {!c.ready && c.reason ? ` — ${c.reason}` : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          모델
+          <select name="model" value={modelId} onChange={(e) => setModelId(e.target.value)} disabled={!combo}>
+            {!combo && <option value="">–</option>}
+            {combo?.models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          프롬프트
+          <textarea
+            name="prompt"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            rows={4}
+            placeholder="요청 내용…"
+          />
+        </label>
+        <div className="req-submit-row">
+          <button type="submit" className="compose-submit req-submit" disabled={busy || !prompt.trim() || (liveReady && !combo)}>
+            {busy ? '등록 중…' : liveReady ? '실행' : '요청 등록'}
+          </button>
+          {note && <span className="plain-note">{note}</span>}
+        </div>
+      </form>
+
+      {liveReady && (
+        <>
+          <div className="panel-head req-runs-head">
+            <span className="panel-title">실행</span>
+            {runs && runs.length > 0 && <span className="panel-count">{runs.length}</span>}
+            <span className="panel-rule" aria-hidden="true" />
+          </div>
+          {runs === null ? (
+            <p className="panel-empty">불러오는 중…</p>
+          ) : runs.length === 0 ? (
+            <p className="panel-empty">없음</p>
+          ) : (
+            <div className="panel-rows" role="list">
+              {runs.slice(0, 10).map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  role="listitem"
+                  className="panel-row run-row"
+                  onClick={() => setOpenRun(r.id)}
+                >
+                  <span className="p-time mono">{fmtWhen(runStartMs(r))}</span>
+                  <span className="run-type">{r.type}</span>
+                  <span className="run-path mono">
+                    {r.provider}/{authAbbr(r.auth)}
+                  </span>
+                  <span className={`run-status${r.status === 'failed' ? ' failed' : r.status === 'done' ? ' done' : ''}`}>
+                    {runStatusText(r, now)}
+                  </span>
+                  <span className="run-prompt">{r.prompt}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {openRun && dToken && (
+        <RunDrawer dToken={dToken} id={openRun} onClose={() => setOpenRun(null)} onChanged={() => void loadRuns()} />
+      )}
+    </section>
+  )
+}
+
+/* ════════════════════════════════════════════════════════════════ */
+
+type NotifState = { src: 'opsd' | 'gh'; items: Notification[]; sha?: string }
 
 export default function App() {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY))
@@ -741,24 +1487,14 @@ export default function App() {
   const [menuFor, setMenuFor] = useState<string | null>(null)
   const [menuUp, setMenuUp] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
-  const [composer, setComposer] = useState(false)
-  const [queue, setQueue] = useState<AgentRequest[] | null>(null)
-  const [notifs, setNotifs] = useState<{ items: Notification[]; sha: string } | null>(null)
-  const [notifOpen, setNotifOpen] = useState(false)
-  const [queueOpen, setQueueOpen] = useState(false)
-  const toggleQueue = useCallback(async () => {
-    if (queueOpen) {
-      setQueueOpen(false)
-      return
-    }
-    setNotifOpen(false)
-    setQueueOpen(true)
-    if (token) setQueue(await listRequests(token))
-  }, [queueOpen, token])
-  const toggleNotif = useCallback(() => {
-    setQueueOpen(false)
-    setNotifOpen((v) => !v)
-  }, [])
+
+  const [view, setView] = useState<'board' | 'mail'>('board')
+  const [daemon, setDaemon] = useState<'checking' | 'live' | 'offline'>('checking')
+  const [dToken, setDToken] = useState<string | null>(() => getDaemonToken())
+  const [providers, setProviders] = useState<ProvidersPayload | null>(null)
+  const [notifs, setNotifs] = useState<NotifState | null>(null)
+  const [openSection, setOpenSection] = useState<'notif' | 'req' | 'settings' | null>(null)
+
   const toastTimer = useRef<number | undefined>(undefined)
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -779,30 +1515,76 @@ export default function App() {
     return () => document.removeEventListener('keydown', onKey)
   }, [])
 
-  const load = useCallback(async (tok: string) => {
-    setLoading(true)
-    try {
-      const [{ data, sha }, login] = await Promise.all([fetchBoard(tok), whoami(tok)])
-      setBoard(data)
-      void fetchNotifications(tok).then((n) => setNotifs(n))
-      setSha(sha)
-      setUser(login)
-      setGateError(null)
-      localStorage.setItem(TOKEN_KEY, tok)
-      setToken(tok)
-    } catch (e) {
-      setGateError(e instanceof Error ? e.message : String(e))
-      localStorage.removeItem(TOKEN_KEY)
-      setToken(null)
-    } finally {
-      setLoading(false)
+  /* 데몬 감지: /health 1.5s. 성공 시 카탈로그·알림을 데몬에서 가져온다 */
+  const refreshDaemon = useCallback(async (tok: string | null) => {
+    const ok = await checkDaemonHealth()
+    setDaemon(ok ? 'live' : 'offline')
+    if (ok && tok) {
+      fetchProviders(tok)
+        .then(setProviders)
+        .catch(() => {})
+      notifList(tok)
+        .then((items) => setNotifs({ src: 'opsd', items }))
+        .catch(() => {})
     }
   }, [])
+
+  useEffect(() => {
+    void refreshDaemon(dToken)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const load = useCallback(
+    async (tok: string) => {
+      setLoading(true)
+      try {
+        const [{ data, sha }, login] = await Promise.all([fetchBoard(tok), whoami(tok)])
+        setBoard(data)
+        /* 큐 모드 폴백: 데몬 알림이 이미 있으면 GitHub 본은 무시 */
+        void fetchNotifications(tok).then((n) => {
+          if (n) setNotifs((prev) => (prev?.src === 'opsd' ? prev : { src: 'gh', items: n.items, sha: n.sha }))
+        })
+        setSha(sha)
+        setUser(login)
+        setGateError(null)
+        localStorage.setItem(TOKEN_KEY, tok)
+        setToken(tok)
+      } catch (e) {
+        setGateError(e instanceof Error ? e.message : String(e))
+        localStorage.removeItem(TOKEN_KEY)
+        setToken(null)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [],
+  )
 
   useEffect(() => {
     if (token) void load(token)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const readAllNotifs = useCallback(async () => {
+    if (!notifs) return
+    if (notifs.src === 'opsd' && dToken) {
+      await notifRead(dToken)
+      setNotifs({ src: 'opsd', items: await notifList(dToken) })
+    } else if (notifs.src === 'gh' && token && notifs.sha) {
+      await markNotificationsHandled(token, notifs.items, notifs.sha)
+      const n = await fetchNotifications(token)
+      if (n) setNotifs({ src: 'gh', items: n.items, sha: n.sha })
+    }
+  }, [notifs, dToken, token])
+
+  const saveDaemonToken = useCallback(
+    (t: string) => {
+      setDaemonToken(t)
+      setDToken(t)
+      void refreshDaemon(t)
+    },
+    [refreshDaemon],
+  )
 
   const changeStatus = useCallback(
     async (app: Application, next: Status) => {
@@ -935,33 +1717,59 @@ export default function App() {
     )
   }
 
+  const unreadCount = notifs?.items.filter((n) => !n.handled).length ?? 0
+  const toggleSection = (s: 'notif' | 'req' | 'settings') => setOpenSection((cur) => (cur === s ? null : s))
+
+  const sections = (
+    <>
+      {openSection === 'notif' && <NotifSection items={notifs?.items ?? null} onReadAll={readAllNotifs} />}
+      {openSection === 'req' && (
+        <RequestSection live={daemon === 'live'} dToken={dToken} providers={providers} user={user} patToken={token} />
+      )}
+      {openSection === 'settings' && <SettingsSection daemon={daemon} dToken={dToken} onSave={saveDaemonToken} />}
+    </>
+  )
+
   return (
     <main className="board">
       <header className="topbar">
-        <h1 className="wordmark">
-          mango<span className="wordmark-dot">.</span>career
-        </h1>
+        <div className="topbar-left">
+          <h1 className="wordmark">
+            mango<span className="wordmark-dot">.</span>career
+          </h1>
+          <nav className="view-toggle mono" aria-label="뷰 전환">
+            <button type="button" className={view === 'board' ? 'on' : ''} aria-pressed={view === 'board'} onClick={() => setView('board')}>
+              보드
+            </button>
+            <span className="vt-sep" aria-hidden="true">
+              |
+            </span>
+            <button type="button" className={view === 'mail' ? 'on' : ''} aria-pressed={view === 'mail'} onClick={() => setView('mail')}>
+              메일
+            </button>
+          </nav>
+        </div>
         <div className="topbar-right mono">
           <button
             type="button"
             className="topbar-action"
-            aria-expanded={notifOpen}
+            aria-expanded={openSection === 'notif'}
             aria-controls="panel-notif"
-            onClick={toggleNotif}
+            onClick={() => toggleSection('notif')}
           >
-            알림{notifs && notifs.items.filter((n) => !n.handled).length > 0 ? ` ${notifs.items.filter((n) => !n.handled).length}` : ''}
+            알림{unreadCount > 0 ? ` ${unreadCount}` : ''}
           </button>
           <button
             type="button"
             className="topbar-action"
-            aria-expanded={queueOpen}
-            aria-controls="panel-queue"
-            onClick={() => void toggleQueue()}
+            aria-expanded={openSection === 'req'}
+            aria-controls="panel-req"
+            onClick={() => toggleSection('req')}
           >
-            요청 큐
+            요청
           </button>
-          <button type="button" className="topbar-action" onClick={() => setComposer(true)}>
-            에이전트 요청
+          <button type="button" className="topbar-action" aria-expanded={openSection === 'settings'} onClick={() => toggleSection('settings')}>
+            설정
           </button>
           <span className="sep">·</span>
           <span>{user}</span>
@@ -982,272 +1790,196 @@ export default function App() {
         </div>
       </header>
 
-      <section className="overview" aria-label="파이프라인 요약">
-        <FunnelBar apps={apps} />
-        <div className="metrics">
-          <span>
-            <strong>{stats.total}</strong> 전체
-          </span>
-          <span>
-            <strong>{stats.ready}</strong> 준비
-          </span>
-          <span>
-            <strong>{stats.waiting}</strong> 응답 대기
-          </span>
-          <span>
-            <strong>{stats.inProgress}</strong> 진행 중
-          </span>
-          <span>
-            <strong className="num-rejected">{stats.rejected}</strong> 탈락
-          </span>
-          <span>
-            <strong>{stats.rate}<span className="unit">%</span></strong> 응답률
-          </span>
-          {filtered && (
-            <span className="metrics-filtered" aria-live="polite">
-              {groups.visibleCount}건 표시 중
-            </span>
-          )}
-        </div>
-      </section>
-
-      <section className="insights" aria-label="시각화">
-        <div className="viz">
-          <h2 className="viz-label mono">FLOW</h2>
-          <Sankey apps={apps} />
-        </div>
-        <div className="viz">
-          <h2 className="viz-label mono">TIMELINE</h2>
-          <Timeline apps={apps} />
-        </div>
-      </section>
-
-      {notifOpen && (
-        <section id="panel-notif" className="panel" aria-label="알림">
-          <div className="panel-head">
-            <span className="panel-title">알림</span>
-            {notifs && notifs.items.length > 0 && (
-              <span className={`panel-count${notifs.items.some((n) => !n.handled) ? ' alert' : ''}`}>
-                {notifs.items.some((n) => !n.handled)
-                  ? `${notifs.items.filter((n) => !n.handled).length} 미확인`
-                  : `${notifs.items.length}`}
+      {view === 'mail' ? (
+        <>
+          {sections}
+          <MailView live={daemon === 'live'} dToken={dToken} queueNotifs={notifs?.items ?? null} />
+        </>
+      ) : (
+        <>
+          <section className="overview" aria-label="파이프라인 요약">
+            <FunnelBar apps={apps} />
+            <div className="metrics">
+              <span>
+                <strong>{stats.total}</strong> 전체
               </span>
-            )}
-            <span className="panel-rule" aria-hidden="true" />
-            {notifs && notifs.items.some((n) => !n.handled) && (
-              <button
-                type="button"
-                className="panel-action"
-                onClick={async () => {
-                  if (!token || !notifs) return
-                  try {
-                    await markNotificationsHandled(token, notifs.items, notifs.sha)
-                    setNotifs(await fetchNotifications(token))
-                    showToast({ kind: 'ok', text: '알림 모두 확인 처리' })
-                  } catch (e) {
-                    showToast({ kind: 'err', text: e instanceof Error ? e.message : '알림 갱신 실패' })
-                  }
-                }}
-              >
-                모두 확인
-              </button>
-            )}
-          </div>
-          {!notifs || notifs.items.length === 0 ? (
-            <p className="panel-empty">알림 없음 — mail-cron(30분 주기)이 채용 메일을 분류해 여기에 쌓습니다</p>
-          ) : (
-            <div className="panel-rows" role="list">
-              {notifs.items.slice(0, 15).map((n) => (
-                <div key={n.id} role="listitem" className={`panel-row notif-row${n.handled ? ' handled' : ''}`}>
-                  <span className="p-time mono">{n.at.slice(5, 16).replace('T', ' ')}</span>
-                  <span className={`p-kind mono nk-${notifKindTone(n.kind)}`}>
-                    <span className="dot" style={{ background: NOTIF_KIND_DOT[n.kind] ?? '#e8a33d' }} aria-hidden="true" />
-                    {n.kind}
-                  </span>
-                  <span className="p-org">{n.company ?? n.source}</span>
-                  <span className="p-subject">{n.subject}</span>
-                  {n.statusChange ? (
-                    <span className="p-change mono">{n.statusChange}</span>
-                  ) : (
-                    <span className="p-change none mono" aria-hidden="true">
-                      –
-                    </span>
-                  )}
-                </div>
-              ))}
+              <span>
+                <strong>{stats.ready}</strong> 준비
+              </span>
+              <span>
+                <strong>{stats.waiting}</strong> 응답 대기
+              </span>
+              <span>
+                <strong>{stats.inProgress}</strong> 진행 중
+              </span>
+              <span>
+                <strong className="num-rejected">{stats.rejected}</strong> 탈락
+              </span>
+              <span>
+                <strong>{stats.rate}<span className="unit">%</span></strong> 응답률
+              </span>
+              {filtered && (
+                <span className="metrics-filtered" aria-live="polite">
+                  {groups.visibleCount}건 표시 중
+                </span>
+              )}
             </div>
-          )}
-        </section>
-      )}
-
-      {queueOpen && (
-        <section id="panel-queue" className="panel" aria-label="요청 큐">
-          <div className="panel-head">
-            <span className="panel-title">요청 큐</span>
-            {queue && queue.length > 0 && <span className="panel-count">{queue.length}</span>}
-            <span className="panel-rule" aria-hidden="true" />
-          </div>
-          {queue === null ? (
-            <p className="panel-empty">불러오는 중…</p>
-          ) : queue.length === 0 ? (
-            <p className="panel-empty">요청 없음 — "에이전트 요청"으로 등록하면 로컬 세션이 처리합니다</p>
-          ) : (
-            <div className="panel-rows" role="list">
-              {queue.map((q) => (
-                <div key={q.id} role="listitem" className="panel-row queue-row">
-                  <span className="p-id mono">{q.id}</span>
-                  <span className="p-type">{q.type}</span>
-                  <span className={`p-status mono qs-${queueTone(q.status)}`}>
-                    <span className="dot" style={{ background: QUEUE_DOT[queueTone(q.status)] }} aria-hidden="true" />
-                    {q.status}
-                  </span>
-                  <span className="p-subject">{q.title}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-      )}
-
-      <section className="filters" aria-label="필터">
-        {STATUS_ORDER.map((s, i) => (
-          <span key={s} className="filter-slot">
-            {(i === 6 || i === 9) && <span className="filter-div" aria-hidden="true" />}
-            <button
-              type="button"
-              className={`filter ${statusFilter.has(s) ? 'active' : ''}`}
-              aria-pressed={statusFilter.has(s)}
-              onClick={() =>
-                setStatusFilter((prev) => {
-                  const next = new Set(prev)
-                  if (next.has(s)) next.delete(s)
-                  else next.add(s)
-                  return next
-                })
-              }
-            >
-              <span className="dot" style={{ background: STATUS_COLOR[s] }} aria-hidden="true" />
-              {STATUS_LABEL[s]}
-              <span className="filter-count mono">{s === 'screening' ? screeningReached : counts[s]}</span>
-            </button>
-          </span>
-        ))}
-        <input
-          ref={searchRef}
-          type="search"
-          className="search"
-          name="q"
-          placeholder="검색…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          aria-label="회사·포지션 검색"
-          spellCheck={false}
-        />
-        <kbd className="search-kbd mono" aria-hidden="true">
-          ⌘K
-        </kbd>
-      </section>
-
-      <div className="list" role="table" aria-label="지원 목록">
-        <div className="row head" role="row">
-          <span role="columnheader" className="cell-num" aria-label="행 번호" />
-          <span role="columnheader">회사 · 포지션</span>
-          <span role="columnheader">연차</span>
-          <span role="columnheader">공고</span>
-          <span role="columnheader" className="ta-r">
-            제출일
-          </span>
-          <span role="columnheader" className="ta-r">
-            문서
-          </span>
-          <span role="columnheader">상태</span>
-          <span role="columnheader">메모</span>
-        </div>
-        {groups.groups.map(([wave, rows]) => (
-          <section key={wave} className="wave-group" role="rowgroup">
-            <h2 className="wave-head mono" aria-label={`${wave} 차수 ${rows.length}건`}>
-              {wave}
-              <span className="wave-count">{rows.length}건</span>
-            </h2>
-            {rows.map((a, i) => (
-              <div
-                key={a.id}
-                role="row"
-                tabIndex={0}
-                className="row"
-                onClick={() => setOpenId(a.id)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && e.target === e.currentTarget) setOpenId(a.id)
-                }}
-              >
-                <span role="cell" className="cell-num mono">
-                  {String(i + 1).padStart(2, '0')}
-                </span>
-                <span role="cell" className="cell-main">
-                  <span className="company">{a.company}</span>
-                  <span className="role">{a.role}</span>
-                </span>
-                <span role="cell" className="cell-years mono">
-                  {a.yearsReq || '–'}
-                </span>
-                <span role="cell" className="cell-channel">
-                  {a.url ? (
-                    <a href={a.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
-                      {channelLabel(a.url, a.channel)}
-                    </a>
-                  ) : (
-                    '–'
-                  )}
-                </span>
-                <span role="cell" className="cell-date mono ta-r">
-                  {a.submitted ?? '–'}
-                </span>
-                <span role="cell" className="cell-docs mono ta-r">
-                  {a.docs?.length ?? '–'}
-                </span>
-                <span role="cell" className="cell-status">
-                  <StatusDot status={a.status} asButton onClick={undefined} />
-                  <button
-                    type="button"
-                    className="status-hit"
-                    aria-label={`${a.company} 상태 변경`}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      openRowMenu(a.id, e)
-                    }}
-                  />
-                  {menuFor === a.id && (
-                    <StatusMenu
-                      current={a.status}
-                      up={menuUp}
-                      onPick={(s) => void changeStatus(a, s)}
-                      onClose={() => setMenuFor(null)}
-                    />
-                  )}
-                </span>
-                <span role="cell" className="cell-notes">
-                  {a.notes ?? '–'}
-                </span>
-              </div>
-            ))}
           </section>
-        ))}
-        {groups.visibleCount === 0 && (
-          <div className="empty">
-            <p>조건에 맞는 항목 없음</p>
-            <button
-              type="button"
-              className="linkish"
-              onClick={() => {
-                setStatusFilter(new Set())
-                setQuery('')
-              }}
-            >
-              필터 해제
-            </button>
+
+          {sections}
+
+          <section className="insights" aria-label="시각화">
+            <div className="viz">
+              <h2 className="viz-label mono">FLOW</h2>
+              <Sankey apps={apps} />
+            </div>
+            <div className="viz">
+              <h2 className="viz-label mono">TIMELINE</h2>
+              <Timeline apps={apps} />
+            </div>
+          </section>
+
+          <section className="filters" aria-label="필터">
+            {STATUS_ORDER.map((s, i) => (
+              <span key={s} className="filter-slot">
+                {(i === 6 || i === 9) && <span className="filter-div" aria-hidden="true" />}
+                <button
+                  type="button"
+                  className={`filter ${statusFilter.has(s) ? 'active' : ''}`}
+                  aria-pressed={statusFilter.has(s)}
+                  onClick={() =>
+                    setStatusFilter((prev) => {
+                      const next = new Set(prev)
+                      if (next.has(s)) next.delete(s)
+                      else next.add(s)
+                      return next
+                    })
+                  }
+                >
+                  <span className="dot" style={{ background: STATUS_COLOR[s] }} aria-hidden="true" />
+                  {STATUS_LABEL[s]}
+                  <span className="filter-count mono">{s === 'screening' ? screeningReached : counts[s]}</span>
+                </button>
+              </span>
+            ))}
+            <input
+              ref={searchRef}
+              type="search"
+              className="search"
+              name="q"
+              placeholder="검색…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              aria-label="회사·포지션 검색"
+              spellCheck={false}
+            />
+            <kbd className="search-kbd mono" aria-hidden="true">
+              ⌘K
+            </kbd>
+          </section>
+
+          <div className="list" role="table" aria-label="지원 목록">
+            <div className="row head" role="row">
+              <span role="columnheader" className="cell-num" aria-label="행 번호" />
+              <span role="columnheader">회사 · 포지션</span>
+              <span role="columnheader">연차</span>
+              <span role="columnheader">공고</span>
+              <span role="columnheader" className="ta-r">
+                제출일
+              </span>
+              <span role="columnheader" className="ta-r">
+                문서
+              </span>
+              <span role="columnheader">상태</span>
+              <span role="columnheader">메모</span>
+            </div>
+            {groups.groups.map(([wave, rows]) => (
+              <section key={wave} className="wave-group" role="rowgroup">
+                <h2 className="wave-head mono" aria-label={`${wave} 차수 ${rows.length}건`}>
+                  {wave}
+                  <span className="wave-count">{rows.length}건</span>
+                </h2>
+                {rows.map((a, i) => (
+                  <div
+                    key={a.id}
+                    role="row"
+                    tabIndex={0}
+                    className="row"
+                    onClick={() => setOpenId(a.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && e.target === e.currentTarget) setOpenId(a.id)
+                    }}
+                  >
+                    <span role="cell" className="cell-num mono">
+                      {String(i + 1).padStart(2, '0')}
+                    </span>
+                    <span role="cell" className="cell-main">
+                      <span className="company">{a.company}</span>
+                      <span className="role">{a.role}</span>
+                    </span>
+                    <span role="cell" className="cell-years mono">
+                      {a.yearsReq || '–'}
+                    </span>
+                    <span role="cell" className="cell-channel">
+                      {a.url ? (
+                        <a href={a.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+                          {channelLabel(a.url, a.channel)}
+                        </a>
+                      ) : (
+                        '–'
+                      )}
+                    </span>
+                    <span role="cell" className="cell-date mono ta-r">
+                      {a.submitted ?? '–'}
+                    </span>
+                    <span role="cell" className="cell-docs mono ta-r">
+                      {a.docs?.length ?? '–'}
+                    </span>
+                    <span role="cell" className="cell-status">
+                      <StatusDot status={a.status} asButton onClick={undefined} />
+                      <button
+                        type="button"
+                        className="status-hit"
+                        aria-label={`${a.company} 상태 변경`}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          openRowMenu(a.id, e)
+                        }}
+                      />
+                      {menuFor === a.id && (
+                        <StatusMenu
+                          current={a.status}
+                          up={menuUp}
+                          onPick={(s) => void changeStatus(a, s)}
+                          onClose={() => setMenuFor(null)}
+                        />
+                      )}
+                    </span>
+                    <span role="cell" className="cell-notes">
+                      {a.notes ?? '–'}
+                    </span>
+                  </div>
+                ))}
+              </section>
+            ))}
+            {groups.visibleCount === 0 && (
+              <div className="empty">
+                <p>조건에 맞는 항목 없음</p>
+                <button
+                  type="button"
+                  className="linkish"
+                  onClick={() => {
+                    setStatusFilter(new Set())
+                    setQuery('')
+                  }}
+                >
+                  필터 해제
+                </button>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
 
       {openApp && (
         <Drawer
@@ -1258,8 +1990,6 @@ export default function App() {
           toast={showToast}
         />
       )}
-
-      {composer && <Composer user={user} token={token} onClose={() => setComposer(false)} toast={showToast} />}
 
       {toast && (
         <button type="button" className={`toast ${toast.kind}`} role="status" aria-live="polite" onClick={() => setToast(null)}>

@@ -162,6 +162,38 @@ button {
   justify-content: space-between;
   margin-bottom: 24px;
 }
+.topbar-left {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+}
+/* 뷰 토글: mono 텍스트만. 액티브 = 텍스트 톤 (보더·액센트 없음) */
+.view-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 12px;
+}
+.view-toggle button {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  transition: color 120ms;
+}
+.view-toggle button:hover {
+  color: var(--text-2);
+}
+.view-toggle button.on {
+  color: var(--text);
+  font-weight: 600;
+}
+.vt-sep {
+  color: var(--border-strong);
+}
 .topbar-right {
   display: flex;
   gap: 10px;
@@ -179,6 +211,7 @@ button {
   padding: 0;
   font-size: 11px;
   font-family: var(--mono);
+  white-space: nowrap;
 }
 .linkish {
   color: var(--text-3);
@@ -715,6 +748,250 @@ button {
   cursor: default;
 }
 
+/* ── 공통: 텍스트 액션 · 평문 상태 줄 ── */
+.text-action {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--amber);
+}
+.text-action:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.text-action:disabled {
+  color: var(--text-3);
+  cursor: default;
+  text-decoration: none;
+}
+.plain-note {
+  margin: 0;
+  padding: 4px 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.plain-note.err {
+  color: var(--danger);
+}
+
+/* ── 메일함 ── */
+.mailbox {
+  margin: 2px -10px 0;
+}
+.mailbox > .plain-note {
+  padding: 4px 10px;
+}
+.mail-actions {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 0 10px;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.mail-note {
+  color: var(--text-3);
+  font-size: 11px;
+}
+.mail-list {
+  display: flex;
+  flex-direction: column;
+}
+/* 48px 2줄 행: 발신·제목 위 13px, 스니펫 아래 11px. 미읽음 = 좌측 2px 앰버 틱 */
+.mail-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  height: 48px;
+  padding: 0 10px;
+  border-radius: 5px;
+  background: none;
+  border: none;
+  text-align: left;
+  color: inherit;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 120ms;
+}
+.mail-row:hover {
+  background: var(--bg-hover);
+}
+.mail-row:active {
+  background: var(--bg-active);
+}
+.mail-row.unread {
+  box-shadow: inset 2px 0 0 var(--amber);
+}
+.mail-acct {
+  font-size: 10.5px;
+  color: var(--text-3);
+  text-align: center;
+}
+.mail-main {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+}
+.mail-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  line-height: 1.35;
+}
+.mail-from {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: none;
+  max-width: 40%;
+}
+.mail-subj {
+  font-size: 13px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mail-snip {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mail-time {
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+/* 전문 드로어 */
+.mail-frame {
+  width: 100%;
+  height: 60vh;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #ffffff;
+  margin-top: 16px;
+}
+.mail-text {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.drawer-actions {
+  display: flex;
+  gap: 14px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── 요청 컴포저 + 실행 원장 ── */
+.req-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 560px;
+  padding: 6px 10px 18px;
+}
+.req-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.req-form input,
+.req-form select,
+.req-form textarea {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 12.5px;
+  font-family: inherit;
+}
+.req-form select:disabled {
+  color: var(--text-3);
+}
+.req-form input:focus,
+.req-form select:focus,
+.req-form textarea:focus {
+  outline: none;
+  border-color: var(--amber);
+}
+.req-submit-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.req-submit {
+  width: auto;
+  padding: 7px 18px;
+}
+.req-runs-head {
+  margin-top: 8px;
+}
+.run-ev {
+  font-size: 11px;
+}
+.run-result {
+  color: var(--text-2);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* ── 설정: 데몬 토큰 (PAT 게이트와 동일 문법) ── */
+.settings-form {
+  display: flex;
+  gap: 8px;
+  max-width: 560px;
+  padding: 6px 10px 18px;
+}
+.settings-form input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 12.5px;
+  font-family: var(--mono);
+}
+.settings-form input:focus {
+  outline: none;
+  border-color: var(--amber);
+}
+.settings-form button {
+  background: var(--amber);
+  border: none;
+  border-radius: 5px;
+  color: #1a1206;
+  font-weight: 600;
+  padding: 7px 16px;
+}
+.settings-form button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* ── Toast ── */
 .toast {
   position: fixed;
@@ -796,109 +1073,92 @@ button {
 .panel-row:hover {
   background: var(--bg-hover);
 }
-.notif-row {
-  grid-template-columns: 78px 100px minmax(110px, 150px) 1fr auto;
-}
-.queue-row {
-  grid-template-columns: minmax(140px, 170px) 90px 104px 1fr;
-}
-.p-time,
-.p-id {
+.p-time {
   font-size: 10.5px;
   color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.p-kind,
-.p-status {
-  display: inline-flex;
-  align-items: center;
-  font-size: 11px;
-  white-space: nowrap;
+/* 알림 행: 시각 · 사실 한 줄 · 출처. 미읽음 = 좌측 2px 앰버 틱 */
+.notif-row {
+  grid-template-columns: 78px 1fr auto;
 }
-.p-kind .dot,
-.p-status .dot {
-  margin-right: 6px;
-}
-/* kind 텍스트 톤 3단 — StatusDot 문법: 진행=밝게, 대기=text-3, 탈락=dim red 텍스트 토큰 */
-.nk-rejection {
-  color: #c9655c;
-}
-.nk-receipt {
-  color: var(--text-3);
-}
-.nk-other {
-  color: var(--text);
-}
-.p-org {
-  color: var(--text);
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.p-type {
-  color: var(--text-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.p-subject {
+.n-fact {
   color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.p-change {
-  font-size: 11px;
-  color: var(--amber);
-  white-space: nowrap;
-  text-align: right;
-}
-.p-change.none {
+.n-src {
+  font-size: 10.5px;
   color: var(--text-3);
+  white-space: nowrap;
 }
-/* 미확인 = 좌측 앰버 틱 (filter.active 인셋 언더라인과 같은 문법) · 확인됨 = 3단 dim */
 .notif-row:not(.handled) {
   box-shadow: inset 2px 0 0 var(--amber);
 }
-.notif-row.handled .p-org,
-.notif-row.handled .p-subject,
-.notif-row.handled .p-kind,
-.notif-row.handled .p-change {
-  color: var(--text-3);
-  font-weight: 400;
-}
-.notif-row.handled .dot {
-  opacity: 0.35;
-}
-/* queue status 톤: pending·processing=밝게, done=muted, failed=dim red 텍스트 토큰 */
-.qs-pending,
-.qs-processing {
+.notif-row:not(.handled) .n-fact {
   color: var(--text);
 }
-.qs-done {
+.notif-row.handled .n-fact {
   color: var(--text-3);
 }
-.qs-failed {
+/* run 행: 시각 · 유형 · 경로 · 상태 · 프롬프트 */
+.run-row {
+  grid-template-columns: 78px 80px 130px 110px 1fr;
+  width: 100%;
+  background: none;
+  border: none;
+  text-align: left;
+  color: inherit;
+  font-family: inherit;
+}
+.run-type {
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.run-path {
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.run-status {
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.run-status.done {
+  color: var(--text-3);
+}
+.run-status.failed {
   color: #c9655c;
+}
+.run-prompt {
+  color: var(--text-3);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 760px) {
   .notif-row {
-    grid-template-columns: 100px 1fr;
+    grid-template-columns: 1fr auto;
   }
-  .notif-row .p-time,
-  .notif-row .p-org,
-  .notif-row .p-change {
+  .notif-row .p-time {
     display: none;
   }
-  .queue-row {
-    grid-template-columns: 104px 1fr;
+  .run-row {
+    grid-template-columns: 80px 110px 1fr;
   }
-  .queue-row .p-id,
-  .queue-row .p-type {
+  .run-row .p-time,
+  .run-row .run-path {
     display: none;
   }
 }
@@ -924,6 +1184,17 @@ button {
 @media (max-width: 760px) {
   .board {
     padding: 20px 16px 80px;
+  }
+  .topbar {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .topbar-left {
+    width: 100%;
+  }
+  .topbar-right {
+    flex-wrap: wrap;
+    row-gap: 4px;
   }
   .row {
     grid-template-columns: minmax(150px, 1.5fr) 96px;
