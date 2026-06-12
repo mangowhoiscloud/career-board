@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { fetchNotifications, markNotificationsHandled, type Notification, commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, whoami } from './api'
 import {
-  cachedProviders, checkDaemonHealth, fetchProviders, getDaemonToken, setDaemonToken,
-  mailList, mailMessage, mailScan, mailSend, notifList, notifRead,
-  runCreate, runDetail, runsList, runStop,
-  type MailListItem, type MailListResult, type MailMessage, type ProvidersPayload, type RequestType, type RunDetail, type RunSummary,
-} from './opsd'
+  commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, fetchJsonFile, fetchNotifications,
+  fetchTextFile, markNotificationsHandled, putJsonFile, whoami,
+  type InboxData, type InboxMessage, type Notification, type OutboxData, type OutboxItem,
+  type RequestType, type RunnerRun, type RunnerState,
+} from './api'
 import type { Application, BoardData, Status } from './types'
 import { STATUS_COLOR, STATUS_LABEL, STATUS_ORDER } from './types'
 
@@ -51,11 +50,6 @@ function fmtWhen(ms: number): string {
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-function mmss(ms: number): string {
-  const t = Math.max(0, Math.floor(ms / 1000))
-  return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`
-}
-
 /* "이름 <addr>" 헤더 파싱 */
 function fromName(s: string): string {
   const m = s.match(/^"?([^"<]*)"?\s*</)
@@ -80,8 +74,8 @@ function runStartMs(r: { started: string | null; id: string }): number {
   return Date.now()
 }
 
-function authAbbr(auth: string): string {
-  return auth === 'subscription' ? 'sub' : auth === 'api_key' ? 'key' : auth
+function hhmm(iso: string): string {
+  return new Date(iso).toTimeString().slice(0, 5)
 }
 
 function statusTone(s: Status): 'muted' | 'active' | 'closed' {
@@ -690,76 +684,30 @@ function NotifSection({
 }
 
 /* ════════════════════════════════════════════════════════════════
-   설정 — 로컬 데몬 토큰 (PAT 게이트와 동일 UX, 입력 필드 1개)
-   ════════════════════════════════════════════════════════════════ */
-
-function SettingsSection({
-  daemon,
-  dToken,
-  onSave,
-}: {
-  daemon: 'checking' | 'live' | 'offline'
-  dToken: string | null
-  onSave: (t: string) => void
-}) {
-  const [value, setValue] = useState(dToken ?? '')
-  return (
-    <section className="panel" aria-label="설정">
-      <div className="panel-head">
-        <span className="panel-title">설정</span>
-        <span className="panel-count">
-          {daemon === 'live' ? '데몬 연결됨 · 127.0.0.1:8787' : daemon === 'offline' ? '데몬 오프라인' : '확인 중…'}
-        </span>
-        <span className="panel-rule" aria-hidden="true" />
-      </div>
-      <form
-        className="settings-form"
-        onSubmit={(e) => {
-          e.preventDefault()
-          if (value.trim()) onSave(value.trim())
-        }}
-      >
-        <input
-          type="password"
-          name="daemonToken"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder="로컬 데몬 토큰 (~/.config/career-ops/daemon.json)"
-          aria-label="로컬 데몬 토큰"
-          autoComplete="off"
-          spellCheck={false}
-        />
-        <button type="submit" disabled={!value.trim()}>
-          저장
-        </button>
-      </form>
-    </section>
-  )
-}
-
-/* ════════════════════════════════════════════════════════════════
-   메일함 — opsd 경유 Gmail+Naver 통합. 큐 모드에서는 알림 요약만.
+   메일함 — 러너가 동기화하는 data/mail/inbox.json (전문 포함).
+   발송은 data/mail/outbox.json 에 queued 항목을 PAT 커밋, 러너가 집행.
    ════════════════════════════════════════════════════════════════ */
 
 type MailDrawerState =
-  | { kind: 'message'; account: string; id: string }
-  | { kind: 'compose'; prefill?: { account: string; to: string; subject: string; in_reply_to?: string; thread_id?: string } }
+  | { kind: 'message'; msg: InboxMessage }
+  | { kind: 'compose'; prefill?: { account: string; to: string; subject: string; in_reply_to?: string } }
 
 function MailComposeForm({
-  dToken,
+  token,
+  user,
   prefill,
-  onSent,
+  onQueued,
 }: {
-  dToken: string
-  prefill?: { account: string; to: string; subject: string; in_reply_to?: string; thread_id?: string }
-  onSent: () => void
+  token: string
+  user: string
+  prefill?: { account: string; to: string; subject: string; in_reply_to?: string }
+  onQueued: () => void
 }) {
   const [account, setAccount] = useState(prefill?.account ?? 'gmail')
   const [to, setTo] = useState(prefill?.to ?? '')
   const [subject, setSubject] = useState(prefill?.subject ?? '')
   const [body, setBody] = useState('')
-  const [phase, setPhase] = useState<'idle' | 'armed' | 'sending' | 'sent'>('idle')
-  const [sentAt, setSentAt] = useState('')
+  const [phase, setPhase] = useState<'idle' | 'armed' | 'committing' | 'queued'>('idle')
   const [err, setErr] = useState<string | null>(null)
   const armTimer = useRef<number | undefined>(undefined)
 
@@ -776,21 +724,31 @@ function MailComposeForm({
     }
     if (phase !== 'armed') return
     window.clearTimeout(armTimer.current)
-    setPhase('sending')
+    setPhase('committing')
     try {
-      await mailSend(dToken, {
+      const fetched = await fetchJsonFile<OutboxData>(token, 'data/mail/outbox.json')
+      const ts = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)
+      const item: OutboxItem = {
+        id: `OUT-${ts}`,
         account,
         to: to.trim(),
         subject: subject.trim(),
         body,
         ...(prefill?.in_reply_to ? { in_reply_to: prefill.in_reply_to } : {}),
-        ...(prefill?.thread_id ? { thread_id: prefill.thread_id } : {}),
-      })
-      setSentAt(new Date().toTimeString().slice(0, 5))
-      setPhase('sent')
-      onSent()
+        status: 'queued',
+        queued_at: new Date().toISOString(),
+      }
+      await putJsonFile(
+        token,
+        'data/mail/outbox.json',
+        { items: [...(fetched?.data.items ?? []), item] },
+        fetched?.sha ?? null,
+        `mail: outbox queue (board:${user})`,
+      )
+      setPhase('queued')
+      onQueued()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : '발송 실패')
+      setErr(e instanceof Error ? e.message : '큐 등록 실패')
       setPhase('idle')
     }
   }
@@ -799,7 +757,7 @@ function MailComposeForm({
     <div className="compose-form">
       <label>
         보내는 계정
-        <select name="account" value={account} onChange={(e) => setAccount(e.target.value)} disabled={phase === 'sent'}>
+        <select name="account" value={account} onChange={(e) => setAccount(e.target.value)} disabled={phase === 'queued'}>
           <option value="gmail">gmail</option>
           <option value="naver">naver</option>
         </select>
@@ -813,56 +771,47 @@ function MailComposeForm({
           onChange={(e) => setTo(e.target.value)}
           placeholder="addr@example.com"
           spellCheck={false}
-          disabled={phase === 'sent'}
+          disabled={phase === 'queued'}
         />
       </label>
       <label>
         제목
-        <input type="text" name="subject" value={subject} onChange={(e) => setSubject(e.target.value)} disabled={phase === 'sent'} />
+        <input type="text" name="subject" value={subject} onChange={(e) => setSubject(e.target.value)} disabled={phase === 'queued'} />
       </label>
       <label>
         본문
-        <textarea name="body" value={body} onChange={(e) => setBody(e.target.value)} rows={10} disabled={phase === 'sent'} />
+        <textarea name="body" value={body} onChange={(e) => setBody(e.target.value)} rows={10} disabled={phase === 'queued'} />
       </label>
-      {phase === 'sent' ? (
-        <p className="plain-note">발송됨 · {sentAt}</p>
+      {phase === 'queued' ? (
+        <p className="plain-note">대기 · 러너가 60초 내 발송</p>
       ) : (
-        <button type="button" className="compose-submit" disabled={!ready || phase === 'sending'} onClick={() => void onSendClick()}>
-          {phase === 'armed' ? '발송 확정' : phase === 'sending' ? '발송 중…' : '발송'}
+        <button type="button" className="compose-submit" disabled={!ready || phase === 'committing'} onClick={() => void onSendClick()}>
+          {phase === 'armed' ? '발송 확정' : phase === 'committing' ? '등록 중…' : '발송'}
         </button>
       )}
-      {err && <p className="plain-note err">발송 실패: {err}</p>}
+      {err && <p className="plain-note err">큐 등록 실패: {err}</p>}
     </div>
   )
 }
 
 function MailDrawer({
-  dToken,
+  token,
+  user,
   state,
   onClose,
   onReply,
-  onSent,
+  onQueued,
 }: {
-  dToken: string
+  token: string
+  user: string
   state: MailDrawerState
   onClose: () => void
-  onReply: (m: MailMessage) => void
-  onSent: () => void
+  onReply: (m: InboxMessage) => void
+  onQueued: () => void
 }) {
   const ref = useDialog(onClose)
-  const [msg, setMsg] = useState<MailMessage | null>(null)
-  const [err, setErr] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (state.kind !== 'message') return
-    setMsg(null)
-    setErr(null)
-    mailMessage(dToken, state.account, state.id)
-      .then(setMsg)
-      .catch((e) => setErr(e instanceof Error ? e.message : '메일 로드 실패'))
-  }, [dToken, state])
-
   const isCompose = state.kind === 'compose'
+  const msg = state.kind === 'message' ? state.msg : null
   return (
     <>
       <div className="drawer-backdrop" onClick={onClose} aria-hidden="true" />
@@ -876,8 +825,8 @@ function MailDrawer({
       >
         <header className="drawer-head">
           <div>
-            <h2>{isCompose ? (state.prefill?.in_reply_to ? '답장' : '새 메일') : msg?.subject ?? '메일'}</h2>
-            {!isCompose && msg && <p className="drawer-role">{msg.from}</p>}
+            <h2>{isCompose ? (state.prefill?.in_reply_to ? '답장' : '새 메일') : msg?.subject || '(제목 없음)'}</h2>
+            {msg && <p className="drawer-role">{msg.from}</p>}
           </div>
           <button type="button" className="drawer-close" onClick={onClose} aria-label="닫기 (Esc)">
             esc
@@ -885,102 +834,81 @@ function MailDrawer({
         </header>
 
         {isCompose ? (
-          <MailComposeForm dToken={dToken} prefill={state.prefill} onSent={onSent} />
-        ) : err ? (
-          <p className="plain-note err">{err}</p>
-        ) : !msg ? (
-          <p className="plain-note">불러오는 중…</p>
+          <MailComposeForm token={token} user={user} prefill={state.prefill} onQueued={onQueued} />
         ) : (
-          <>
-            <dl className="drawer-meta">
-              <div>
-                <dt>보낸이</dt>
-                <dd>{msg.from}</dd>
+          msg && (
+            <>
+              <dl className="drawer-meta">
+                <div>
+                  <dt>보낸이</dt>
+                  <dd>{msg.from}</dd>
+                </div>
+                <div>
+                  <dt>시각</dt>
+                  <dd className="mono">{new Date(msg.at * 1000).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' })}</dd>
+                </div>
+                <div>
+                  <dt>계정</dt>
+                  <dd className="mono">{msg.account}</dd>
+                </div>
+              </dl>
+              <div className="mail-text">{msg.body || '(본문 없음)'}</div>
+              <div className="drawer-actions">
+                <button type="button" className="text-action" onClick={() => onReply(msg)}>
+                  답장
+                </button>
               </div>
-              <div>
-                <dt>받는이</dt>
-                <dd>{msg.to || '–'}</dd>
-              </div>
-              <div>
-                <dt>시각</dt>
-                <dd className="mono">{new Date(msg.at * 1000).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' })}</dd>
-              </div>
-              <div>
-                <dt>계정</dt>
-                <dd className="mono">{msg.account}</dd>
-              </div>
-            </dl>
-            {msg.html ? (
-              <iframe className="mail-frame" sandbox="" srcDoc={msg.html} title="메일 본문" />
-            ) : (
-              <div className="mail-text">{msg.text || '(본문 없음)'}</div>
-            )}
-            <div className="drawer-actions">
-              <button type="button" className="text-action" onClick={() => onReply(msg)}>
-                답장
-              </button>
-            </div>
-          </>
+            </>
+          )
         )}
       </aside>
     </>
   )
 }
 
-function MailView({
-  live,
-  dToken,
-  queueNotifs,
-}: {
-  live: boolean
-  dToken: string | null
-  queueNotifs: Notification[] | null
-}) {
-  const [list, setList] = useState<MailListResult | null>(null)
+function outboxStatusText(o: OutboxItem): string {
+  if (o.status === 'sent') return o.sent_at ? `발송됨 · ${fmtWhen(new Date(o.sent_at).getTime())}` : '발송됨'
+  if (o.status === 'failed') return o.error ? `실패: ${o.error}` : '실패'
+  return '대기 · 러너 발송'
+}
+
+function MailView({ token, user }: { token: string; user: string }) {
+  const [inbox, setInbox] = useState<InboxData | null>(null)
+  const [outbox, setOutbox] = useState<OutboxItem[] | null>(null)
+  const [missing, setMissing] = useState(false)
   const [loadErr, setLoadErr] = useState<string | null>(null)
-  const [scanNote, setScanNote] = useState<string | null>(null)
-  const [scanning, setScanning] = useState(false)
   const [drawer, setDrawer] = useState<MailDrawerState | null>(null)
-  const enabled = live && !!dToken
 
   const load = useCallback(async () => {
-    if (!dToken) return
     try {
-      setList(await mailList(dToken, 25))
+      const [inb, oub] = await Promise.all([
+        fetchJsonFile<InboxData>(token, 'data/mail/inbox.json'),
+        fetchJsonFile<OutboxData>(token, 'data/mail/outbox.json'),
+      ])
+      setMissing(inb === null)
+      setInbox(inb?.data ?? { synced_at: '', messages: [] })
+      setOutbox(oub?.data.items ?? [])
       setLoadErr(null)
     } catch (e) {
-      setLoadErr(e instanceof Error ? e.message : '메일 목록 로드 실패')
+      setLoadErr(e instanceof Error ? e.message : '메일 동기본 로드 실패')
     }
-  }, [dToken])
+  }, [token])
 
+  /* 진입 시 1회 + 뷰가 열려 있는 동안 60초 간격 재fetch 1개 */
   useEffect(() => {
-    if (enabled) void load()
-  }, [enabled, load])
+    void load()
+    const t = window.setInterval(() => void load(), 60000)
+    return () => window.clearInterval(t)
+  }, [load])
 
-  if (!enabled) {
-    const mailNotifs = (queueNotifs ?? []).filter((n) => notifSource(n.source) === 'mail')
-    return (
-      <section className="mailbox" aria-label="메일함">
-        <p className="plain-note">
-          {live ? '데몬 토큰 없음 · 설정에서 입력' : '로컬 데몬 오프라인 · 메일은 데스크톱에서'}
-        </p>
-        {mailNotifs.length > 0 && (
-          <div className="panel-rows" role="list">
-            {mailNotifs.slice(0, 20).map((n) => (
-              <div key={n.id} role="listitem" className={`panel-row notif-row${n.handled ? ' handled' : ''}`}>
-                <span className="p-time mono">{n.at.slice(5, 16).replace('T', ' ')}</span>
-                <span className="n-fact">
-                  {n.company ? `${n.company} · ` : ''}
-                  {n.subject}
-                </span>
-                <span className="n-src mono">{notifSource(n.source)}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-    )
-  }
+  const messages = useMemo(
+    () => [...(inbox?.messages ?? [])].sort((a, b) => b.at - a.at),
+    [inbox],
+  )
+  const sentItems = useMemo(
+    () => [...(outbox ?? [])].sort((a, b) => b.queued_at.localeCompare(a.queued_at)).slice(0, 5),
+    [outbox],
+  )
 
   return (
     <section className="mailbox" aria-label="메일함">
@@ -988,46 +916,26 @@ function MailView({
         <button type="button" className="text-action" onClick={() => setDrawer({ kind: 'compose' })}>
           새 메일
         </button>
-        <span className="sep">·</span>
-        <button
-          type="button"
-          className="text-action"
-          disabled={scanning}
-          onClick={() => {
-            if (!dToken) return
-            setScanning(true)
-            setScanNote(null)
-            mailScan(dToken)
-              .then((r) => {
-                setScanNote(`스캔 완료 · 신규 ${r.new_notifications}`)
-                void load()
-              })
-              .catch((e) => setScanNote(e instanceof Error ? e.message : '스캔 실패'))
-              .finally(() => setScanning(false))
-          }}
-        >
-          {scanning ? '스캔 중…' : '스캔'}
-        </button>
-        {scanNote && <span className="mail-note">{scanNote}</span>}
+        {inbox && inbox.synced_at && <span className="mail-note">동기 {hhmm(inbox.synced_at)} 기준</span>}
       </div>
 
       {loadErr && <p className="plain-note err">{loadErr}</p>}
-      {list?.errors.gmail && <p className="plain-note">gmail: {list.errors.gmail}</p>}
-      {list?.errors.naver && <p className="plain-note">naver: {list.errors.naver}</p>}
 
-      {list === null && !loadErr ? (
+      {inbox === null && !loadErr ? (
         <p className="plain-note">불러오는 중…</p>
-      ) : list && list.messages.length === 0 ? (
+      ) : missing ? (
+        <p className="plain-note">메일 동기본 없음 · 러너 확인</p>
+      ) : messages.length === 0 ? (
         <p className="plain-note">없음</p>
       ) : (
         <div className="mail-list" role="list">
-          {list?.messages.map((m: MailListItem) => (
+          {messages.map((m) => (
             <button
               key={`${m.account}-${m.id}`}
               type="button"
               role="listitem"
               className={`mail-row${m.unread ? ' unread' : ''}`}
-              onClick={() => setDrawer({ kind: 'message', account: m.account, id: m.id })}
+              onClick={() => setDrawer({ kind: 'message', msg: m })}
             >
               <span className="mail-acct mono" aria-label={m.account}>
                 {m.account === 'gmail' ? 'G' : 'N'}
@@ -1045,12 +953,32 @@ function MailView({
         </div>
       )}
 
-      {drawer && dToken && (
+      {sentItems.length > 0 && (
+        <>
+          <div className="panel-head mail-sent-head">
+            <span className="panel-title">보낸 메일</span>
+            <span className="panel-rule" aria-hidden="true" />
+          </div>
+          <div className="panel-rows" role="list">
+            {sentItems.map((o) => (
+              <div key={o.id} role="listitem" className="panel-row out-row">
+                <span className="p-time mono">{fmtWhen(new Date(o.queued_at).getTime())}</span>
+                <span className="out-to">{o.to}</span>
+                <span className="out-subj">{o.subject}</span>
+                <span className={`out-status${o.status === 'failed' ? ' failed' : ''}`}>{outboxStatusText(o)}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {drawer && (
         <MailDrawer
-          dToken={dToken}
+          token={token}
+          user={user}
           state={drawer}
           onClose={() => setDrawer(null)}
-          onSent={() => void load()}
+          onQueued={() => void load()}
           onReply={(m) =>
             setDrawer({
               kind: 'compose',
@@ -1058,8 +986,7 @@ function MailView({
                 account: m.account,
                 to: fromAddr(m.from),
                 subject: m.subject.startsWith('Re:') ? m.subject : `Re: ${m.subject}`,
-                in_reply_to: m.message_id,
-                ...(m.thread_id ? { thread_id: m.thread_id } : {}),
+                ...(m.message_id ? { in_reply_to: m.message_id } : {}),
               },
             })
           }
@@ -1071,7 +998,8 @@ function MailView({
 
 /* ════════════════════════════════════════════════════════════════
    요청 — 컴포저(유형·실행 경로·모델·프롬프트) + 최근 runs 원장
-   라이브 = POST /runs 즉시 실행, 큐 모드 = requests/ PAT 커밋(runner 블록 포함)
+   제출 = requests/REQ-*.md PAT 커밋(runner 블록 포함), 러너가 60초 주기로 집행.
+   상태원 = data/runner-state.json (러너가 갱신).
    ════════════════════════════════════════════════════════════════ */
 
 const FALLBACK_TYPES: RequestType[] = [
@@ -1083,51 +1011,29 @@ const FALLBACK_TYPES: RequestType[] = [
   { id: 'mail-check', label: '메일 확인', needs: 'scan', cwd: 'career-data' },
 ]
 
-function runStatusText(r: RunSummary, now: number): string {
-  if (r.status === 'running') return `실행 중 ${mmss(now - runStartMs(r))}`
+const RUNNER_STALE_MS = 40 * 60 * 1000
+
+function runStatusText(r: RunnerRun): string {
+  if (r.status === 'running') return '실행 중'
   if (r.status === 'failed') return '실패'
   return '완료'
 }
 
-function RunDrawer({
-  dToken,
-  id,
-  onClose,
-  onChanged,
-}: {
-  dToken: string
-  id: string
-  onClose: () => void
-  onChanged: () => void
-}) {
+/* run 드로어: done = 산출물(reports/runs/*.md) PAT fetch, failed = error 평문,
+   running = 시작 시각 평문. 중단 버튼 없음 — 중단은 러너 로컬 전용. */
+function RunDrawer({ token, run, onClose }: { token: string; run: RunnerRun; onClose: () => void }) {
   const ref = useDialog(onClose)
-  const [detail, setDetail] = useState<RunDetail | null>(null)
+  const [output, setOutput] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
-  const [stopping, setStopping] = useState(false)
-
-  const load = useCallback(() => {
-    runDetail(dToken, id)
-      .then(setDetail)
-      .catch((e) => setErr(e instanceof Error ? e.message : 'run 로드 실패'))
-  }, [dToken, id])
 
   useEffect(() => {
-    load()
-  }, [load])
-
-  useEffect(() => {
-    if (detail?.status !== 'running') return
-    const t = window.setInterval(load, 3000)
-    return () => window.clearInterval(t)
-  }, [detail?.status, load])
-
-  const statusLine = detail
-    ? detail.status === 'running'
-      ? '실행 중'
-      : detail.status === 'failed'
-        ? `실패${typeof detail.exit === 'number' ? ` · exit ${detail.exit}` : ''}`
-        : '완료'
-    : ''
+    if (run.status !== 'done' || !run.output) return
+    setOutput(null)
+    setErr(null)
+    fetchTextFile(token, run.output)
+      .then(setOutput)
+      .catch((e) => setErr(e instanceof Error ? e.message : '산출물 로드 실패'))
+  }, [token, run])
 
   return (
     <>
@@ -1136,140 +1042,122 @@ function RunDrawer({
         className="drawer"
         role="dialog"
         aria-modal="true"
-        aria-label={`run ${id}`}
+        aria-label={`run ${run.id}`}
         ref={ref as React.RefObject<HTMLElement>}
         tabIndex={-1}
       >
         <header className="drawer-head">
           <div>
-            <h2 className="mono">{id}</h2>
-            {detail && <p className="drawer-role">{statusLine}</p>}
+            <h2 className="mono">{run.id}</h2>
+            <p className="drawer-role">{runStatusText(run)}</p>
           </div>
           <button type="button" className="drawer-close" onClick={onClose} aria-label="닫기 (Esc)">
             esc
           </button>
         </header>
 
-        {err ? (
-          <p className="plain-note err">{err}</p>
-        ) : !detail ? (
-          <p className="plain-note">불러오는 중…</p>
-        ) : (
-          <>
-            <dl className="drawer-meta">
-              <div>
-                <dt>유형</dt>
-                <dd>{detail.spec.type}</dd>
-              </div>
-              <div>
-                <dt>경로</dt>
-                <dd className="mono">
-                  {detail.spec.provider}/{authAbbr(detail.spec.auth)} · {detail.spec.model}
-                </dd>
-              </div>
-              {detail.started && (
-                <div>
-                  <dt>시작</dt>
-                  <dd className="mono">{fmtHistoryAt(detail.started)}</dd>
-                </div>
-              )}
-              {detail.ended && (
-                <div>
-                  <dt>종료</dt>
-                  <dd className="mono">{fmtHistoryAt(detail.ended)}</dd>
-                </div>
-              )}
-            </dl>
+        <dl className="drawer-meta">
+          <div>
+            <dt>유형</dt>
+            <dd>{run.type}</dd>
+          </div>
+          <div>
+            <dt>경로</dt>
+            <dd className="mono">
+              {run.combo} · {run.model}
+            </dd>
+          </div>
+          {run.started && (
+            <div>
+              <dt>시작</dt>
+              <dd className="mono">{fmtHistoryAt(run.started)}</dd>
+            </div>
+          )}
+          {run.ended && (
+            <div>
+              <dt>종료</dt>
+              <dd className="mono">{fmtHistoryAt(run.ended)}</dd>
+            </div>
+          )}
+        </dl>
 
-            <section className="drawer-notes">
-              <h3>프롬프트</h3>
-              <p>{detail.spec.prompt}</p>
-            </section>
+        <section className="drawer-notes">
+          <h3>프롬프트</h3>
+          <p>{run.prompt}</p>
+        </section>
 
-            <section className="drawer-history">
-              <h3>이벤트</h3>
-              {detail.events_tail.length === 0 ? (
-                <p className="mono">없음</p>
-              ) : (
-                detail.events_tail.map((ev, i) => (
-                  <p key={i} className="mono run-ev">
-                    {ev.at} {ev.type} · {ev.text}
-                  </p>
-                ))
-              )}
-            </section>
+        {run.status === 'running' && (
+          <p className="plain-note">실행 중{run.started ? ` · 시작 ${hhmm(run.started)}` : ''}</p>
+        )}
 
-            {detail.result && (
-              <section className="drawer-notes">
-                <h3>결과</h3>
-                <div className="run-result">{detail.result}</div>
-              </section>
+        {run.status === 'failed' && <p className="plain-note err">{run.error || '실패 사유 없음'}</p>}
+
+        {run.status === 'done' && (
+          <section className="drawer-notes">
+            <h3>결과</h3>
+            {!run.output ? (
+              <p className="plain-note">산출물 경로 없음</p>
+            ) : err ? (
+              <p className="plain-note err">{err}</p>
+            ) : output === null ? (
+              <p className="plain-note">불러오는 중…</p>
+            ) : (
+              <div className="run-result">{output}</div>
             )}
-
-            {detail.status === 'running' && (
-              <div className="drawer-actions">
-                <button
-                  type="button"
-                  className="text-action"
-                  disabled={stopping}
-                  onClick={() => {
-                    setStopping(true)
-                    runStop(dToken, id)
-                      .then(() => {
-                        load()
-                        onChanged()
-                      })
-                      .catch((e) => setErr(e instanceof Error ? e.message : '중단 실패'))
-                      .finally(() => setStopping(false))
-                  }}
-                >
-                  {stopping ? '중단 중…' : '중단'}
-                </button>
-              </div>
-            )}
-          </>
+          </section>
         )}
       </aside>
     </>
   )
 }
 
-function RequestSection({
-  live,
-  dToken,
-  providers,
-  user,
-  patToken,
-}: {
-  live: boolean
-  dToken: string | null
-  providers: ProvidersPayload | null
-  user: string
-  patToken: string
-}) {
-  const catalog = providers ?? cachedProviders()
-  const types = catalog?.request_types?.length ? catalog.request_types : FALLBACK_TYPES
-  const combos = catalog?.combos ?? []
+function RequestSection({ token, user }: { token: string; user: string }) {
+  const [state, setState] = useState<RunnerState | null>(null)
+  const [loaded, setLoaded] = useState(false)
+  const [loadErr, setLoadErr] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const fetched = await fetchJsonFile<RunnerState>(token, 'data/runner-state.json')
+      setState(fetched?.data ?? null)
+      setLoadErr(null)
+    } catch (e) {
+      setLoadErr(e instanceof Error ? e.message : '러너 상태 로드 실패')
+    } finally {
+      setLoaded(true)
+    }
+  }, [token])
+
+  /* 진입 시 1회 + 섹션이 열려 있는 동안 60초 간격 재fetch 1개 */
+  useEffect(() => {
+    void load()
+    const t = window.setInterval(() => void load(), 60000)
+    return () => window.clearInterval(t)
+  }, [load])
+
+  const types = state?.request_types?.length ? state.request_types : FALLBACK_TYPES
+  const combos = useMemo(() => state?.combos ?? [], [state])
 
   const [typeId, setTypeId] = useState(types[0]?.id ?? 'research')
+  /* 러너 카탈로그 도착 후 현재 유형이 목록에 없으면 첫 유형으로 */
+  useEffect(() => {
+    if (!types.some((t) => t.id === typeId)) setTypeId(types[0]?.id ?? '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [types])
   const needs = types.find((t) => t.id === typeId)?.needs
   const eligible = useMemo(
     () => combos.filter((c) => needs !== 'files' || c.capabilities.includes('files')),
     [combos, needs],
   )
-  const [comboId, setComboId] = useState<string>(() => eligible.find((c) => c.ready)?.id ?? '')
+  const [comboId, setComboId] = useState('')
   const combo = eligible.find((c) => c.id === comboId)
-  const [modelId, setModelId] = useState<string>(
-    () => combo?.models.find((m) => m.default)?.id ?? combo?.models[0]?.id ?? '',
-  )
+  const [modelId, setModelId] = useState('')
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<string | null>(null)
-  const [runs, setRuns] = useState<RunSummary[] | null>(null)
-  const [openRun, setOpenRun] = useState<string | null>(null)
-  const [now, setNow] = useState(() => Date.now())
+  const [openRun, setOpenRun] = useState<RunnerRun | null>(null)
 
-  /* 유형 변경으로 현재 콤보가 부적격해지면 첫 ready 콤보로 */
+  /* 적격 콤보가 바뀌면(상태 갱신·유형 변경) 첫 ready 콤보로 */
   useEffect(() => {
     if (!eligible.some((c) => c.id === comboId && c.ready)) {
       setComboId(eligible.find((c) => c.ready)?.id ?? '')
@@ -1283,76 +1171,37 @@ function RequestSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [comboId])
 
-  const liveReady = live && !!dToken
-
-  const loadRuns = useCallback(async () => {
-    if (!dToken) return
-    try {
-      setRuns(await runsList(dToken))
-    } catch {
-      /* 목록 로드 실패는 다음 폴링에서 재시도 */
-    }
-  }, [dToken])
-
-  useEffect(() => {
-    if (liveReady) void loadRuns()
-  }, [liveReady, loadRuns])
-
-  const anyRunning = runs?.some((r) => r.status === 'running') ?? false
-
-  /* 5s 폴링 + 경과 시계: 실행 중일 때만 */
-  useEffect(() => {
-    if (!liveReady || !anyRunning) return
-    const poll = window.setInterval(() => void loadRuns(), 5000)
-    const tick = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => {
-      window.clearInterval(poll)
-      window.clearInterval(tick)
-    }
-  }, [liveReady, anyRunning, loadRuns])
+  const aliveAt = state?.runner_alive_at ? new Date(state.runner_alive_at).getTime() : null
+  const runnerStale = aliveAt !== null && Date.now() - aliveAt > RUNNER_STALE_MS
+  const runs = state?.recent_runs ?? []
+  const notReady = eligible.filter((c) => !c.ready)
 
   const submit = async () => {
-    if (!prompt.trim()) return
+    if (!prompt.trim() || !combo) return
     setBusy(true)
     setNote(null)
     try {
-      if (liveReady && dToken && combo) {
-        const id = await runCreate(dToken, {
-          type: typeId,
-          provider: combo.provider,
-          auth: combo.auth,
-          model: modelId,
-          prompt: prompt.trim(),
-        })
-        setPrompt('')
-        setNote(`실행 시작 · ${id}`)
-        await loadRuns()
-      } else {
-        const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12)
-        const label = types.find((t) => t.id === typeId)?.label ?? typeId
-        const runner = combo
-          ? { provider: combo.provider, auth: combo.auth, model: modelId }
-          : { provider: 'anthropic', auth: 'subscription', model: null }
-        const body = [
-          `# REQ-${ts} · ${label}`,
-          '',
-          `- type: ${typeId}`,
-          `- runner: ${JSON.stringify(runner)}`,
-          `- requested-by: board:${user}`,
-          `- requested-at: ${new Date().toISOString()}`,
-          `- status: pending`,
-          '',
-          '## 요청',
-          '',
-          prompt.trim(),
-          '',
-          '> 처리 규약: opsd 또는 로컬 세션이 requests/ 를 확인해 처리한다. 완료 시 status: done 으로 수정하고 산출물 경로를 기재한다.',
-          '',
-        ].join('\n')
-        await createFile(patToken, `requests/REQ-${ts}.md`, body, `request: ${label} (board:${user})`)
-        setPrompt('')
-        setNote(`요청 등록됨 · REQ-${ts}`)
-      }
+      const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12)
+      const label = types.find((t) => t.id === typeId)?.label ?? typeId
+      const body = [
+        `# REQ-${ts} · ${label}`,
+        '',
+        `- type: ${typeId}`,
+        `- runner: ${JSON.stringify({ combo: combo.id, model: modelId })}`,
+        `- requested-by: board:${user}`,
+        `- requested-at: ${new Date().toISOString()}`,
+        `- status: pending`,
+        '',
+        '## 요청',
+        '',
+        prompt.trim(),
+        '',
+        '> 처리 규약: 러너 또는 로컬 세션이 requests/ 를 확인해 처리한다. 완료 시 status: done 으로 수정하고 산출물 경로를 기재한다.',
+        '',
+      ].join('\n')
+      await createFile(token, `requests/REQ-${ts}.md`, body, `request: ${label} (board:${user})`)
+      setPrompt('')
+      setNote(`REQ-${ts} · 대기 중 · 러너 주기 60초`)
     } catch (e) {
       setNote(e instanceof Error ? e.message : '요청 실패')
     } finally {
@@ -1364,9 +1213,19 @@ function RequestSection({
     <section id="panel-req" className="panel" aria-label="요청">
       <div className="panel-head">
         <span className="panel-title">요청</span>
-        <span className="panel-count">{liveReady ? '라이브 · 즉시 실행' : '큐 모드 · requests/ 커밋'}</span>
+        {state && <span className="panel-count">requests/ 커밋 · 러너 주기 60초</span>}
         <span className="panel-rule" aria-hidden="true" />
       </div>
+
+      {loadErr && <p className="panel-empty">{loadErr}</p>}
+      {!loaded && !loadErr && <p className="panel-empty">불러오는 중…</p>}
+      {loaded && !loadErr && !state && <p className="panel-empty">러너 상태 없음 · Mac에서 launchd 확인</p>}
+
+      {runnerStale && state && (
+        <p className="panel-empty">
+          러너 마지막 응답 {fmtHistoryAt(state.runner_alive_at)} · Mac에서 launchd 확인
+        </p>
+      )}
 
       <form
         className="req-form"
@@ -1388,15 +1247,20 @@ function RequestSection({
         <label>
           실행 경로
           <select name="combo" value={comboId} onChange={(e) => setComboId(e.target.value)} disabled={eligible.length === 0}>
-            {eligible.length === 0 && <option value="">카탈로그 없음 · 데몬 1회 연결 필요</option>}
+            {eligible.length === 0 && <option value="">사용 가능한 경로 없음</option>}
             {eligible.map((c) => (
               <option key={c.id} value={c.id} disabled={!c.ready}>
                 {c.label}
-                {!c.ready && c.reason ? ` — ${c.reason}` : ''}
               </option>
             ))}
           </select>
         </label>
+        {notReady.map((c) => (
+          <p key={c.id} className="plain-note combo-note">
+            {c.label} — {c.reason ?? '사용 불가'}
+            {c.action ? ` · ${c.action}` : ''}
+          </p>
+        ))}
         <label>
           모델
           <select name="model" value={modelId} onChange={(e) => setModelId(e.target.value)} disabled={!combo}>
@@ -1419,60 +1283,50 @@ function RequestSection({
           />
         </label>
         <div className="req-submit-row">
-          <button type="submit" className="compose-submit req-submit" disabled={busy || !prompt.trim() || (liveReady && !combo)}>
-            {busy ? '등록 중…' : liveReady ? '실행' : '요청 등록'}
+          <button type="submit" className="compose-submit req-submit" disabled={busy || !prompt.trim() || !combo}>
+            {busy ? '등록 중…' : '요청 등록'}
           </button>
           {note && <span className="plain-note">{note}</span>}
         </div>
       </form>
 
-      {liveReady && (
-        <>
-          <div className="panel-head req-runs-head">
-            <span className="panel-title">실행</span>
-            {runs && runs.length > 0 && <span className="panel-count">{runs.length}</span>}
-            <span className="panel-rule" aria-hidden="true" />
-          </div>
-          {runs === null ? (
-            <p className="panel-empty">불러오는 중…</p>
-          ) : runs.length === 0 ? (
-            <p className="panel-empty">없음</p>
-          ) : (
-            <div className="panel-rows" role="list">
-              {runs.slice(0, 10).map((r) => (
-                <button
-                  key={r.id}
-                  type="button"
-                  role="listitem"
-                  className="panel-row run-row"
-                  onClick={() => setOpenRun(r.id)}
-                >
-                  <span className="p-time mono">{fmtWhen(runStartMs(r))}</span>
-                  <span className="run-type">{r.type}</span>
-                  <span className="run-path mono">
-                    {r.provider}/{authAbbr(r.auth)}
-                  </span>
-                  <span className={`run-status${r.status === 'failed' ? ' failed' : r.status === 'done' ? ' done' : ''}`}>
-                    {runStatusText(r, now)}
-                  </span>
-                  <span className="run-prompt">{r.prompt}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </>
+      <div className="panel-head req-runs-head">
+        <span className="panel-title">실행</span>
+        {runs.length > 0 && <span className="panel-count">{runs.length}</span>}
+        <span className="panel-rule" aria-hidden="true" />
+      </div>
+      {runs.length === 0 ? (
+        <p className="panel-empty">없음</p>
+      ) : (
+        <div className="panel-rows" role="list">
+          {runs.slice(0, 10).map((r) => (
+            <button
+              key={r.id}
+              type="button"
+              role="listitem"
+              className="panel-row run-row"
+              onClick={() => setOpenRun(r)}
+            >
+              <span className="p-time mono">{fmtWhen(runStartMs(r))}</span>
+              <span className="run-type">{r.type}</span>
+              <span className="run-path mono">{r.combo}</span>
+              <span className={`run-status${r.status === 'failed' ? ' failed' : r.status === 'done' ? ' done' : ''}`}>
+                {runStatusText(r)}
+              </span>
+              <span className="run-prompt">{r.prompt}</span>
+            </button>
+          ))}
+        </div>
       )}
 
-      {openRun && dToken && (
-        <RunDrawer dToken={dToken} id={openRun} onClose={() => setOpenRun(null)} onChanged={() => void loadRuns()} />
-      )}
+      {openRun && <RunDrawer token={token} run={openRun} onClose={() => setOpenRun(null)} />}
     </section>
   )
 }
 
 /* ════════════════════════════════════════════════════════════════ */
 
-type NotifState = { src: 'opsd' | 'gh'; items: Notification[]; sha?: string }
+type NotifState = { items: Notification[]; sha: string }
 
 export default function App() {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY))
@@ -1489,11 +1343,8 @@ export default function App() {
   const [openId, setOpenId] = useState<string | null>(null)
 
   const [view, setView] = useState<'board' | 'mail'>('board')
-  const [daemon, setDaemon] = useState<'checking' | 'live' | 'offline'>('checking')
-  const [dToken, setDToken] = useState<string | null>(() => getDaemonToken())
-  const [providers, setProviders] = useState<ProvidersPayload | null>(null)
   const [notifs, setNotifs] = useState<NotifState | null>(null)
-  const [openSection, setOpenSection] = useState<'notif' | 'req' | 'settings' | null>(null)
+  const [openSection, setOpenSection] = useState<'notif' | 'req' | null>(null)
 
   const toastTimer = useRef<number | undefined>(undefined)
   const searchRef = useRef<HTMLInputElement>(null)
@@ -1515,34 +1366,14 @@ export default function App() {
     return () => document.removeEventListener('keydown', onKey)
   }, [])
 
-  /* 데몬 감지: /health 1.5s. 성공 시 카탈로그·알림을 데몬에서 가져온다 */
-  const refreshDaemon = useCallback(async (tok: string | null) => {
-    const ok = await checkDaemonHealth()
-    setDaemon(ok ? 'live' : 'offline')
-    if (ok && tok) {
-      fetchProviders(tok)
-        .then(setProviders)
-        .catch(() => {})
-      notifList(tok)
-        .then((items) => setNotifs({ src: 'opsd', items }))
-        .catch(() => {})
-    }
-  }, [])
-
-  useEffect(() => {
-    void refreshDaemon(dToken)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   const load = useCallback(
     async (tok: string) => {
       setLoading(true)
       try {
         const [{ data, sha }, login] = await Promise.all([fetchBoard(tok), whoami(tok)])
         setBoard(data)
-        /* 큐 모드 폴백: 데몬 알림이 이미 있으면 GitHub 본은 무시 */
         void fetchNotifications(tok).then((n) => {
-          if (n) setNotifs((prev) => (prev?.src === 'opsd' ? prev : { src: 'gh', items: n.items, sha: n.sha }))
+          if (n) setNotifs({ items: n.items, sha: n.sha })
         })
         setSha(sha)
         setUser(login)
@@ -1566,25 +1397,11 @@ export default function App() {
   }, [])
 
   const readAllNotifs = useCallback(async () => {
-    if (!notifs) return
-    if (notifs.src === 'opsd' && dToken) {
-      await notifRead(dToken)
-      setNotifs({ src: 'opsd', items: await notifList(dToken) })
-    } else if (notifs.src === 'gh' && token && notifs.sha) {
-      await markNotificationsHandled(token, notifs.items, notifs.sha)
-      const n = await fetchNotifications(token)
-      if (n) setNotifs({ src: 'gh', items: n.items, sha: n.sha })
-    }
-  }, [notifs, dToken, token])
-
-  const saveDaemonToken = useCallback(
-    (t: string) => {
-      setDaemonToken(t)
-      setDToken(t)
-      void refreshDaemon(t)
-    },
-    [refreshDaemon],
-  )
+    if (!notifs || !token) return
+    await markNotificationsHandled(token, notifs.items, notifs.sha)
+    const n = await fetchNotifications(token)
+    if (n) setNotifs({ items: n.items, sha: n.sha })
+  }, [notifs, token])
 
   const changeStatus = useCallback(
     async (app: Application, next: Status) => {
@@ -1718,15 +1535,12 @@ export default function App() {
   }
 
   const unreadCount = notifs?.items.filter((n) => !n.handled).length ?? 0
-  const toggleSection = (s: 'notif' | 'req' | 'settings') => setOpenSection((cur) => (cur === s ? null : s))
+  const toggleSection = (s: 'notif' | 'req') => setOpenSection((cur) => (cur === s ? null : s))
 
   const sections = (
     <>
       {openSection === 'notif' && <NotifSection items={notifs?.items ?? null} onReadAll={readAllNotifs} />}
-      {openSection === 'req' && (
-        <RequestSection live={daemon === 'live'} dToken={dToken} providers={providers} user={user} patToken={token} />
-      )}
-      {openSection === 'settings' && <SettingsSection daemon={daemon} dToken={dToken} onSave={saveDaemonToken} />}
+      {openSection === 'req' && <RequestSection token={token} user={user} />}
     </>
   )
 
@@ -1768,9 +1582,6 @@ export default function App() {
           >
             요청
           </button>
-          <button type="button" className="topbar-action" aria-expanded={openSection === 'settings'} onClick={() => toggleSection('settings')}>
-            설정
-          </button>
           <span className="sep">·</span>
           <span>{user}</span>
           <span className="sep">·</span>
@@ -1793,7 +1604,7 @@ export default function App() {
       {view === 'mail' ? (
         <>
           {sections}
-          <MailView live={daemon === 'live'} dToken={dToken} queueNotifs={notifs?.items ?? null} />
+          <MailView token={token} user={user} />
         </>
       ) : (
         <>

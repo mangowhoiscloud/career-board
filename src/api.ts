@@ -64,6 +64,129 @@ export async function commitBoard(
   return json.content.sha as string
 }
 
+/* ── career-data 범용 파일 입출력 (메일함·러너 상태가 공유) ── */
+
+function fileUrl(path: string): string {
+  return `https://api.github.com/repos/${OWNER}/${REPO}/contents/${encodeURI(path)}`
+}
+
+export async function fetchJsonFile<T>(token: string, path: string): Promise<{ data: T; sha: string } | null> {
+  const res = await fetch(fileUrl(path), { headers: headers(token) })
+  if (res.status === 404) return null
+  if (res.status === 401) throw new Error('토큰이 유효하지 않습니다 (401)')
+  if (!res.ok) throw new Error(`${path} 로드 실패 (${res.status})`)
+  const json = await res.json()
+  return { data: JSON.parse(b64decodeUtf8(json.content)) as T, sha: json.sha as string }
+}
+
+export async function putJsonFile(
+  token: string,
+  path: string,
+  data: unknown,
+  sha: string | null,
+  message: string,
+): Promise<void> {
+  const body: Record<string, unknown> = {
+    message,
+    content: b64encodeUtf8(JSON.stringify(data, null, 2) + '\n'),
+  }
+  if (sha) body.sha = sha
+  const res = await fetch(fileUrl(path), {
+    method: 'PUT',
+    headers: { ...headers(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (res.status === 409 || res.status === 422) throw new Error('충돌: 다른 곳에서 먼저 수정됨 — 재시도')
+  if (!res.ok) throw new Error(`커밋 실패 (${res.status})`)
+}
+
+export async function fetchTextFile(token: string, path: string): Promise<string> {
+  const res = await fetch(fileUrl(path), { headers: headers(token) })
+  if (res.status === 404) throw new Error('파일 없음 (404)')
+  if (!res.ok) throw new Error(`${path} 로드 실패 (${res.status})`)
+  const json = await res.json()
+  return b64decodeUtf8(json.content)
+}
+
+/* ── 메일함: 러너가 동기화하는 inbox / 보드가 큐잉하는 outbox ── */
+
+export interface InboxMessage {
+  account: 'gmail' | 'naver'
+  id: string
+  at: number
+  from: string
+  subject: string
+  snippet: string
+  unread: boolean
+  message_id?: string
+  body: string
+}
+export interface InboxData {
+  synced_at: string
+  messages: InboxMessage[]
+}
+
+export interface OutboxItem {
+  id: string
+  account: string
+  to: string
+  subject: string
+  body: string
+  in_reply_to?: string
+  status: 'queued' | 'sent' | 'failed'
+  queued_at: string
+  sent_at?: string
+  error?: string
+}
+export interface OutboxData {
+  items: OutboxItem[]
+}
+
+/* ── 러너 상태: 인증 콤보·요청 유형·최근 실행 (러너가 갱신) ── */
+
+export interface RunnerModel {
+  id: string
+  label: string
+  default?: boolean
+}
+export interface RunnerCombo {
+  id: string
+  provider: string
+  auth: string
+  label: string
+  sdk: string
+  capabilities: string[]
+  models: RunnerModel[]
+  ready: boolean
+  reason?: string
+  action?: string
+}
+export interface RequestType {
+  id: string
+  label: string
+  needs: string
+  cwd: string
+}
+export interface RunnerRun {
+  id: string
+  status: 'running' | 'done' | 'failed'
+  started: string | null
+  ended: string | null
+  type: string
+  combo: string
+  model: string
+  prompt: string
+  output?: string
+  error?: string
+}
+export interface RunnerState {
+  checked_at: string
+  runner_alive_at: string
+  combos: RunnerCombo[]
+  request_types: RequestType[]
+  recent_runs: RunnerRun[]
+}
+
 export async function createFile(
   token: string,
   path: string,

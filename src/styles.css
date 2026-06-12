@@ -308,7 +308,7 @@ button {
   font-size: 12px;
   font-weight: 500;
   padding: 0 10px;
-  transition: color 120ms, background 120ms, box-shadow 120ms;
+  transition: color 120ms, background 120ms;
 }
 .filter:hover {
   color: var(--text);
@@ -319,8 +319,10 @@ button {
 }
 .filter.active {
   color: var(--text);
-  background: var(--bg-active);
-  box-shadow: inset 0 -1px 0 var(--amber);
+  font-weight: 600;
+}
+.filter.active .filter-count {
+  color: var(--amber);
 }
 .filter .dot {
   margin-right: 6px;
@@ -799,7 +801,7 @@ button {
   display: flex;
   flex-direction: column;
 }
-/* 48px 2줄 행: 발신·제목 위 13px, 스니펫 아래 11px. 미읽음 = 좌측 2px 앰버 틱 */
+/* 48px 2줄 행: 발신·제목 위 13px, 스니펫 아래 11px. 미읽음 = 텍스트 톤 (윤곽선 마크 금지) */
 .mail-row {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr) auto;
@@ -822,8 +824,12 @@ button {
 .mail-row:active {
   background: var(--bg-active);
 }
-.mail-row.unread {
-  box-shadow: inset 2px 0 0 var(--amber);
+.mail-row:not(.unread) .mail-from {
+  font-weight: 400;
+  color: var(--text-2);
+}
+.mail-row.unread .mail-time {
+  color: var(--amber);
 }
 .mail-acct {
   font-size: 10.5px;
@@ -874,15 +880,7 @@ button {
   color: var(--text-3);
   white-space: nowrap;
 }
-/* 전문 드로어 */
-.mail-frame {
-  width: 100%;
-  height: 60vh;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: #ffffff;
-  margin-top: 16px;
-}
+/* 전문 드로어: inbox.json body 를 pre-wrap 텍스트로 */
 .mail-text {
   margin-top: 16px;
   padding-top: 14px;
@@ -898,6 +896,35 @@ button {
   margin-top: 18px;
   padding-top: 14px;
   border-top: 1px solid var(--border);
+}
+
+/* 보낸 메일 소절: outbox 큐 최근 5건 — 시각 · 받는이 · 제목 · 상태 텍스트 */
+.mail-sent-head {
+  margin-top: 22px;
+}
+.out-row {
+  grid-template-columns: 78px 170px 1fr auto;
+}
+.out-to {
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.out-subj {
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.out-status {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.out-status.failed {
+  color: #c9655c;
 }
 
 /* ── 요청 컴포저 + 실행 원장 ── */
@@ -935,6 +962,12 @@ button {
   outline: none;
   border-color: var(--amber);
 }
+/* not-ready 콤보 안내: "{label} — {reason} · {action}" 평문 한 줄 */
+.combo-note {
+  padding: 0;
+  margin-top: -6px;
+  font-size: 11.5px;
+}
 .req-submit-row {
   display: flex;
   align-items: center;
@@ -955,41 +988,6 @@ button {
   font-size: 12px;
   white-space: pre-wrap;
   overflow-wrap: break-word;
-}
-
-/* ── 설정: 데몬 토큰 (PAT 게이트와 동일 문법) ── */
-.settings-form {
-  display: flex;
-  gap: 8px;
-  max-width: 560px;
-  padding: 6px 10px 18px;
-}
-.settings-form input {
-  flex: 1;
-  min-width: 0;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  color: var(--text);
-  padding: 7px 10px;
-  font-size: 12.5px;
-  font-family: var(--mono);
-}
-.settings-form input:focus {
-  outline: none;
-  border-color: var(--amber);
-}
-.settings-form button {
-  background: var(--amber);
-  border: none;
-  border-radius: 5px;
-  color: #1a1206;
-  font-weight: 600;
-  padding: 7px 16px;
-}
-.settings-form button:disabled {
-  opacity: 0.45;
-  cursor: default;
 }
 
 /* ── Toast ── */
@@ -1080,7 +1078,7 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* 알림 행: 시각 · 사실 한 줄 · 출처. 미읽음 = 좌측 2px 앰버 틱 */
+/* 알림 행: 시각 · 사실 한 줄 · 출처. 미읽음 = 텍스트 톤 (윤곽선 마크 금지) */
 .notif-row {
   grid-template-columns: 78px 1fr auto;
 }
@@ -1095,11 +1093,12 @@ button {
   color: var(--text-3);
   white-space: nowrap;
 }
-.notif-row:not(.handled) {
-  box-shadow: inset 2px 0 0 var(--amber);
-}
 .notif-row:not(.handled) .n-fact {
   color: var(--text);
+  font-weight: 500;
+}
+.notif-row:not(.handled) .p-time {
+  color: var(--amber);
 }
 .notif-row.handled .n-fact {
   color: var(--text-3);
@@ -1159,6 +1158,13 @@ button {
   }
   .run-row .p-time,
   .run-row .run-path {
+    display: none;
+  }
+  .out-row {
+    grid-template-columns: 1fr auto;
+  }
+  .out-row .p-time,
+  .out-row .out-subj {
     display: none;
   }
 }
