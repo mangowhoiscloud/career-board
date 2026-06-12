@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { listRequests, type AgentRequest, commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, whoami } from './api'
+import { fetchNotifications, markNotificationsHandled, type Notification, listRequests, type AgentRequest, commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, whoami } from './api'
 import type { Application, BoardData, Status } from './types'
 import { STATUS_COLOR, STATUS_LABEL, STATUS_ORDER } from './types'
 
@@ -721,6 +721,8 @@ export default function App() {
   const [openId, setOpenId] = useState<string | null>(null)
   const [composer, setComposer] = useState(false)
   const [queue, setQueue] = useState<AgentRequest[] | null>(null)
+  const [notifs, setNotifs] = useState<{ items: Notification[]; sha: string } | null>(null)
+  const [notifOpen, setNotifOpen] = useState(false)
   const [queueOpen, setQueueOpen] = useState(false)
   const toggleQueue = useCallback(async () => {
     if (queueOpen) {
@@ -755,6 +757,7 @@ export default function App() {
     try {
       const [{ data, sha }, login] = await Promise.all([fetchBoard(tok), whoami(tok)])
       setBoard(data)
+      void fetchNotifications(tok).then((n) => setNotifs(n))
       setSha(sha)
       setUser(login)
       setGateError(null)
@@ -912,6 +915,9 @@ export default function App() {
           mango<span className="wordmark-dot">.</span>career
         </h1>
         <div className="topbar-right mono">
+          <button type="button" className="topbar-action" onClick={() => setNotifOpen((v) => !v)}>
+            알림{notifs && notifs.items.filter((n) => !n.handled).length > 0 ? ` ${notifs.items.filter((n) => !n.handled).length}` : ''}
+          </button>
           <button type="button" className="topbar-action" onClick={() => void toggleQueue()}>
             요청 큐
           </button>
@@ -976,6 +982,44 @@ export default function App() {
           <Timeline apps={apps} />
         </div>
       </section>
+
+      {notifOpen && (
+        <section className="filters" aria-label="알림" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '4px' }}>
+          {!notifs || notifs.items.length === 0 ? (
+            <span className="gate-hint">알림 없음 — mail-cron(30분 주기)이 채용 메일을 분류해 여기에 쌓습니다</span>
+          ) : (
+            <>
+              {notifs.items.slice(0, 15).map((n) => (
+                <div key={n.id} style={{ display: 'flex', gap: '10px', alignItems: 'baseline', fontSize: '12px', opacity: n.handled ? 0.45 : 1 }}>
+                  <span className="mono" style={{ opacity: 0.6, minWidth: '8.5em' }}>{n.at.slice(5, 16).replace('T', ' ')}</span>
+                  <span className="mono" style={{ minWidth: '6.5em', color: n.kind === 'rejection' ? '#c9655c' : n.kind === 'receipt' ? '#c9c9cf' : '#e8a33d' }}>{n.kind}</span>
+                  <span style={{ minWidth: '8em' }}>{n.company ?? n.source}</span>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{n.subject}</span>
+                  {n.statusChange && <span className="mono" style={{ color: '#e9c46a' }}>{n.statusChange}</span>}
+                </div>
+              ))}
+              <div>
+                <button
+                  type="button"
+                  className="topbar-action"
+                  onClick={async () => {
+                    if (!token || !notifs) return
+                    try {
+                      await markNotificationsHandled(token, notifs.items, notifs.sha)
+                      setNotifs(await fetchNotifications(token))
+                      showToast({ kind: 'ok', text: '알림 모두 확인 처리' })
+                    } catch (e) {
+                      showToast({ kind: 'err', text: e instanceof Error ? e.message : '알림 갱신 실패' })
+                    }
+                  }}
+                >
+                  모두 확인
+                </button>
+              </div>
+            </>
+          )}
+        </section>
+      )}
 
       {queueOpen && (
         <section className="filters" aria-label="요청 큐" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '4px' }}>

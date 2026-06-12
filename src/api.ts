@@ -121,6 +121,39 @@ export async function listRequests(token: string): Promise<AgentRequest[]> {
   return out
 }
 
+export type Notification = {
+  id: string
+  at: string
+  source: string
+  kind: string
+  appId?: string | null
+  company?: string | null
+  subject: string
+  statusChange?: string | null
+  handled: boolean
+}
+
+export async function fetchNotifications(token: string): Promise<{ items: Notification[]; sha: string } | null> {
+  const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/data/notifications.json`, {
+    headers: headers(token),
+  })
+  if (!res.ok) return null
+  const json = await res.json()
+  const text = decodeURIComponent(escape(atob((json.content as string).replace(/\n/g, ''))))
+  const data = JSON.parse(text) as { items: Notification[] }
+  return { items: data.items ?? [], sha: json.sha as string }
+}
+
+export async function markNotificationsHandled(token: string, items: Notification[], sha: string): Promise<void> {
+  const body = JSON.stringify({ schema: 1, items: items.map((n) => ({ ...n, handled: true })) }, null, 1)
+  const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/data/notifications.json`, {
+    method: 'PUT',
+    headers: { ...headers(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: 'notifications: 모두 확인 (board)', content: b64encodeUtf8(body), sha }),
+  })
+  if (!res.ok) throw new Error(`알림 갱신 실패 (${res.status})`)
+}
+
 export async function fetchDocBlobUrl(token: string, path: string): Promise<string> {
   const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${encodeURI(path)}`, {
     headers: headers(token),
