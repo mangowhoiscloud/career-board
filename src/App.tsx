@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, fetchJsonFile, fetchTextFile,
   markNotificationsRead, putJsonFile, whoami,
   type InboxData, type InboxMessage, type NotifFile, type Notification, type OutboxData, type OutboxItem,
-  type RequestType, type RunEvent, type RunnerRun, type RunnerState,
+  type RequestType, type RunEvent, type RunnerRun, type RunnerState, type SdkCredit,
 } from './api'
 import { clearStore, patchEntry, prefetchAll, revalidate, useEntry, type Entry, type StoreKey } from './store'
 import type { Application, BoardData, Status } from './types'
@@ -33,12 +33,16 @@ function Md({ text }: { text: string }) {
   )
 }
 
-/* 에이전트 초안 산출물 파서: 첫 줄 "제목: …" + 빈 줄 + 본문. 형식 불일치면 전문을 본문으로 */
+/* 에이전트 초안 산출물 파서: "Subject:|제목:" 줄 + 빈 줄 + 본문.
+   아카이브 md 헤더(#·> 줄)를 스킵 — 헤더 미스킵으로 제목 파싱이 항상 실패하던 결함 교정. */
 function parseDraft(text: string): { subject?: string; body: string } {
   const lines = text.replace(/\r\n/g, '\n').split('\n')
-  const m = (lines[0] ?? '').trim().match(/^제목\s*[::]\s*(.+)$/)
-  if (!m) return { body: text.trim() }
-  let i = 1
+  let s = 0
+  while (s < lines.length && (lines[s].trim() === '' || lines[s].startsWith('# ') || lines[s].startsWith('> ')))
+    s += 1
+  const m = (lines[s] ?? '').trim().match(/^(?:Subject|제목)\s*[::]\s*(.+)$/i)
+  if (!m) return { body: lines.slice(s).join('\n').trim() }
+  let i = s + 1
   while (i < lines.length && lines[i].trim() === '') i += 1
   return { subject: m[1].trim(), body: lines.slice(i).join('\n').trim() }
 }
@@ -1033,10 +1037,10 @@ function MailModal({
       const id = `REQ-${ts}`
       const prompt = [
         marker,
-        "아래 메일에 대한 한국어 답장을 작성해. 출력 형식: 첫 줄은 '제목: …', 빈 줄 하나, 그 다음 본문 텍스트만. 발송하지 않는다.",
+        "Write a reply draft to the mail below, in the same language as the mail. Output format: first line 'Subject: ...', one blank line, then the body text only. Do not send anything.",
         '',
-        `보낸이: ${msg.from}`,
-        `제목: ${msg.subject}`,
+        `From: ${msg.from}`,
+        `Subject: ${msg.subject}`,
         '',
         msg.body,
       ].join('\n')
@@ -1571,6 +1575,122 @@ function SessionDetail({ token, session, types }: { token: string; session: Agen
   )
 }
 
+/* ── 컴포저 설정 칩: Cursor 식 텍스트 칩 + 팝오버 메뉴 (StatusMenu 문법 재사용).
+   보더·배경 없는 mono 텍스트 + ⌄, 선택은 텍스트 톤 600으로만 구분.
+   not-ready 항목은 disabled 톤 + 아래 "{reason} · {action}" 한 줄. ── */
+interface ChipOption {
+  id: string
+  label: string
+  disabled?: boolean
+  sub?: string
+}
+
+function ConfigChip({
+  ariaLabel,
+  text,
+  options,
+  value,
+  disabled,
+  onPick,
+}: {
+  ariaLabel: string
+  text: string
+  options: ChipOption[]
+  value: string
+  disabled?: boolean
+  onPick: (id: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [up, setUp] = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  /* 열릴 때 위치 판정(하단 근접 시 위로 플립, StatusMenu 패턴) + 선택 항목 포커스 */
+  useLayoutEffect(() => {
+    if (!open) return
+    const wrap = wrapRef.current
+    const menu = menuRef.current
+    if (wrap && menu) {
+      const r = wrap.getBoundingClientRect()
+      setUp(window.innerHeight - r.bottom < menu.offsetHeight + 12)
+    }
+    const items = [...(menu?.querySelectorAll<HTMLButtonElement>('button') ?? [])]
+    const sel = items.find((b) => b.dataset.id === value)
+    ;(sel ?? items[0])?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) =>
+      wrapRef.current && !wrapRef.current.contains(e.target as Node) && setOpen(false)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        setOpen(false)
+        btnRef.current?.focus()
+      }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button') ?? [])]
+        const i = items.indexOf(document.activeElement as HTMLButtonElement)
+        const next = e.key === 'ArrowDown' ? (i + 1) % items.length : (i - 1 + items.length) % items.length
+        items[next]?.focus()
+      }
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey, true)
+    }
+  }, [open])
+
+  return (
+    <div className="chip-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        ref={btnRef}
+        className={`cfg-chip mono${open ? ' open' : ''}`}
+        aria-label={ariaLabel}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={() => setOpen((o) => !o)}
+      >
+        {text}
+        <span className="chev" aria-hidden="true">⌄</span>
+      </button>
+      {open && (
+        <div className={`chip-menu${up ? ' up' : ''}`} ref={menuRef} role="menu" aria-label={ariaLabel}>
+          {options.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={o.id === value}
+              aria-disabled={o.disabled || undefined}
+              data-id={o.id}
+              className={`${o.id === value ? 'cur' : ''}${o.disabled ? ' off' : ''}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                if (o.disabled) return
+                onPick(o.id)
+                setOpen(false)
+                btnRef.current?.focus()
+              }}
+            >
+              <span className="chip-opt">{o.label}</span>
+              {o.sub && <span className="chip-sub">{o.sub}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function AgentComposer({
   token,
   user,
@@ -1638,8 +1758,6 @@ function AgentComposer({
     if (modelId) localStorage.setItem(MODEL_KEY, modelId)
   }, [modelId])
 
-  const notReady = eligible.filter((c) => !c.ready)
-
   const submit = async () => {
     if (!prompt.trim() || !combo || !combo.ready) return
     setBusy(true)
@@ -1684,47 +1802,8 @@ function AgentComposer({
         void submit()
       }}
     >
-      {notReady.map((c) => (
-        <p key={c.id} className="plain-note combo-note">
-          {c.label} — {c.reason ?? '사용 불가'}
-          {c.action ? ` · ${c.action}` : ''}
-        </p>
-      ))}
       {note && <p className="plain-note err">{note}</p>}
       <div className="cc-box">
-        <div className="cc-config mono">
-          <select name="type" value={typeId} onChange={(e) => setTypeId(e.target.value)} aria-label="유형">
-            {types.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.label}
-              </option>
-            ))}
-          </select>
-          <span className="cc-config-sep" aria-hidden="true">·</span>
-          <select
-            name="combo"
-            value={comboId}
-            onChange={(e) => setComboId(e.target.value)}
-            disabled={eligible.length === 0}
-            aria-label="실행 경로"
-          >
-            {eligible.length === 0 && <option value="">사용 가능한 경로 없음</option>}
-            {eligible.map((c) => (
-              <option key={c.id} value={c.id} disabled={!c.ready}>
-                {c.label}
-              </option>
-            ))}
-          </select>
-          <span className="cc-config-sep" aria-hidden="true">·</span>
-          <select name="model" value={modelId} onChange={(e) => setModelId(e.target.value)} disabled={!combo} aria-label="모델">
-            {!combo && <option value="">–</option>}
-            {combo?.models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </div>
         <div className="cc-input">
           <span className="cc-caret" aria-hidden="true">❯</span>
           <textarea
@@ -1741,12 +1820,59 @@ function AgentComposer({
             placeholder="새 요청…"
             aria-label="프롬프트"
           />
+        </div>
+        {/* 하단 칩 행: 유형·경로·모델 텍스트 칩(Cursor 컴포저 문법) 좌측, 실행 우측 */}
+        <div className="cc-chips">
+          <ConfigChip
+            ariaLabel="유형"
+            text={typeLabelOf(types, typeId)}
+            value={typeId}
+            options={types.map((t) => ({ id: t.id, label: t.label }))}
+            onPick={setTypeId}
+          />
+          <ConfigChip
+            ariaLabel="실행 경로"
+            text={combo?.label ?? (eligible.length === 0 ? '경로 없음' : '경로 선택')}
+            value={comboId}
+            disabled={eligible.length === 0}
+            options={eligible.map((c) => ({
+              id: c.id,
+              label: c.label,
+              disabled: !c.ready,
+              sub: c.ready ? undefined : `${c.reason ?? '사용 불가'}${c.action ? ` · ${c.action}` : ''}`,
+            }))}
+            onPick={setComboId}
+          />
+          <ConfigChip
+            ariaLabel="모델"
+            text={combo?.models.find((m) => m.id === modelId)?.label ?? '–'}
+            value={modelId}
+            disabled={!combo}
+            options={(combo?.models ?? []).map((m) => ({ id: m.id, label: m.label }))}
+            onPick={setModelId}
+          />
           <button type="submit" className="text-action cc-run" disabled={busy || !prompt.trim() || !combo}>
             {busy ? '등록 중…' : '실행'}
           </button>
         </div>
       </div>
     </form>
+  )
+}
+
+/* ── SDK 크레딧: 러너가 게시한 월간 사용액 — mono 평문 한 줄.
+   80% 도달 시 텍스트 톤만 앰버(보더·배지 금지). note 는 title 로만. ── */
+function SdkCreditLine({ credit }: { credit: SdkCredit }) {
+  const { month, spent_usd, limit_usd, note } = credit
+  const warn = limit_usd !== null && limit_usd > 0 && spent_usd >= limit_usd * 0.8
+  const text =
+    limit_usd !== null && limit_usd > 0
+      ? `SDK 크레딧 ${month} · $${spent_usd.toFixed(2)} / $${limit_usd} (${Math.round((spent_usd / limit_usd) * 100)}%)`
+      : `SDK 크레딧 ${month} · $${spent_usd.toFixed(2)} 사용`
+  return (
+    <p className={`sdk-credit mono${warn ? ' warn' : ''}`} title={note || undefined}>
+      {text}
+    </p>
   )
 }
 
@@ -1848,6 +1974,7 @@ function AgentView({
         {runnerStale && state && (
           <p className="plain-note">러너 마지막 응답 {fmtHistoryAt(state.runner_alive_at)} · Mac에서 launchd 확인</p>
         )}
+        {state?.sdk_credit && <SdkCreditLine credit={state.sdk_credit} />}
         {sel !== 'new' && selected && <SessionDetail token={token} session={selected} types={types} />}
         {/* 터미널 REPL: 세션을 보는 중에도 입력부는 본문 하단 상시 — 입력하면 새 REQ 세션 생성·선택 */}
         <AgentComposer

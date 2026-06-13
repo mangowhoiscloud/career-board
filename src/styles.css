@@ -1308,11 +1308,6 @@ button {
   padding: 14px 0 12px;
   background: var(--bg);
 }
-/* not-ready 콤보 안내: "{label} — {reason} · {action}" 평문 한 줄 */
-.combo-note {
-  padding: 0 0 6px;
-  font-size: 11.5px;
-}
 .cc-box {
   background: var(--bg-panel);
   border: 1px solid var(--border-strong);
@@ -1321,42 +1316,109 @@ button {
 .cc-box:focus-within {
   border-color: var(--amber);
 }
-/* 컨피그 라인: 유형·콤보·모델 inline select — CC 상태줄 */
-.cc-config {
+/* 하단 칩 행: 유형·경로·모델 텍스트 칩 좌측 + 실행 우측 — Cursor 컴포저 구조 */
+.cc-chips {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 12px 0;
-  font-size: 11px;
-  color: var(--text-3);
+  gap: 14px;
+  padding: 0 12px 9px;
 }
-.cc-config select {
+.chip-wrap {
+  position: relative;
+  display: inline-flex;
+}
+/* 칩: 보더·배경 없는 mono 텍스트 + 가는 ⌄. 상태는 텍스트 톤으로만 */
+.cfg-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   background: none;
   border: none;
   padding: 0;
-  color: var(--text-2);
   font-family: var(--mono);
   font-size: 11px;
-  max-width: 200px;
+  color: var(--text-3);
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 120ms;
 }
-.cc-config select:hover {
+.cfg-chip:hover {
+  color: var(--text-2);
+}
+.cfg-chip.open {
   color: var(--text);
 }
-.cc-config select:disabled {
+.cfg-chip:disabled {
   color: var(--text-3);
 }
-.cc-config select:focus {
-  outline: none;
+.cfg-chip .chev {
+  font-size: 9px;
+  line-height: 1;
+  transform: translateY(-1px);
+}
+/* 팝오버: floating menu 문법(StatusMenu와 동일 — 허용된 유일한 그림자) */
+.chip-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  left: -4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  min-width: 168px;
+  max-width: 320px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+}
+.chip-menu.up {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+.chip-menu button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 5px 9px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.chip-menu button:hover,
+.chip-menu button:focus-visible {
+  background: var(--bg-hover);
   color: var(--text);
 }
-.cc-config-sep {
-  color: var(--border-strong);
+/* 선택 항목 = 텍스트 톤 600 (체크마크·액센트 보더 금지) */
+.chip-menu button.cur {
+  color: var(--text);
+  font-weight: 600;
+}
+.chip-menu button.off,
+.chip-menu button.off:hover,
+.chip-menu button.off:focus-visible {
+  color: var(--text-3);
+  font-weight: 400;
+  cursor: default;
+}
+.chip-menu .chip-sub {
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: normal;
 }
 .cc-input {
   display: flex;
   align-items: flex-start;
   gap: 9px;
-  padding: 9px 12px 11px;
+  padding: 11px 12px 7px;
 }
 .cc-input .cc-caret {
   line-height: 1.5;
@@ -1382,8 +1444,18 @@ button {
 }
 .cc-run {
   flex: none;
+  margin-left: auto;
   line-height: 1.5;
   font-size: 11.5px;
+}
+/* SDK 크레딧: mono 평문 한 줄, 80% 이상이면 텍스트 톤만 앰버 */
+.sdk-credit {
+  margin: 0 0 10px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.sdk-credit.warn {
+  color: var(--amber);
 }
 
 /* ── Toast ── */

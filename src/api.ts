@@ -191,12 +191,21 @@ export interface RunnerRun {
   output?: string | null
   error?: string
 }
+export interface SdkCredit {
+  month: string
+  spent_usd: number
+  runs: number
+  judge_calls: number
+  limit_usd: number | null
+  note: string
+}
 export interface RunnerState {
   checked_at: string
   runner_alive_at: string
   combos: RunnerCombo[]
   request_types: RequestType[]
   recent_runs: RunnerRun[]
+  sdk_credit?: SdkCredit
 }
 
 export async function createFile(
