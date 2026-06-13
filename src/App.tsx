@@ -204,6 +204,45 @@ function useDialog(onClose: () => void) {
   return ref
 }
 
+/* 클라이언트 윈도잉: 데이터는 전부 클라에 있고, 한 번에 step 개만 렌더한다.
+   하단 센티넬이 viewport 에 들어오면 +step. items 길이가 바뀌면(필터·새 데이터)
+   count 는 max(step, 현재) 유지하되 items.length 로 clamp — 스크롤 위치를 잃지 않으면서 과도 렌더 방지. */
+function useInfiniteWindow<T>(items: T[], step = 30, resetKey?: string) {
+  const [count, setCount] = useState(step)
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  const len = items.length
+
+  /* items 길이 변동에 count 재정렬: 최소 step, 최대 len. 필터로 줄면 자연히 clamp 된다. */
+  useEffect(() => {
+    setCount((c) => Math.min(Math.max(c, step), Math.max(len, step)))
+  }, [len, step])
+
+  /* 필터·검색 등 명시적 컨텍스트 전환 시 count 를 step 으로 리셋 (스크롤 상단 복귀) */
+  useEffect(() => {
+    if (resetKey !== undefined) setCount(step)
+  }, [resetKey, step])
+
+  const visibleCount = Math.min(count, len)
+  const hasMore = visibleCount < len
+
+  useEffect(() => {
+    if (!hasMore) return
+    const node = sentinelRef.current
+    if (!node) return
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) setCount((c) => c + step)
+      },
+      { rootMargin: '200px' },
+    )
+    obs.observe(node)
+    return () => obs.disconnect()
+  }, [hasMore, step, visibleCount])
+
+  const visible = useMemo(() => items.slice(0, visibleCount), [items, visibleCount])
+  return { visible, sentinelRef, hasMore }
+}
+
 /* requests/REQ-*.md 큐 파일 — 컴포저·메일 초안이 공유하는 단일 포맷 */
 function reqFileBody(opts: { id: string; typeId: string; label: string; combo: string; model: string; user: string; prompt: string; resume?: string; thread?: string }): string {
   return [
@@ -1260,6 +1299,7 @@ function MailView({
       msgs.find((x) => x.subject === focus.subject) ??
       msgs.find((x) => x.subject && (focus.subject.includes(x.subject) || x.subject.includes(focus.subject)))
     if (m) {
+      selectTab(m.account)
       setModal({ kind: 'message', msg: m })
       markRead(m)
     }
@@ -1333,18 +1373,48 @@ function MailView({
     return () => window.clearTimeout(t)
   }, [sync.kind])
 
-  const groups = useMemo(() => {
+  /* 계정별 메시지·미읽음 — 탭 카운트와 목록의 단일 출처. unread 는 오버레이 반영 후. */
+  const byAccount = useMemo(() => {
     const msgs = inbox?.messages ?? []
-    return MAIL_ACCOUNTS.map(([account, label]) => ({
-      account,
-      label,
-      messages: msgs.filter((m) => m.account === account).sort((a, b) => b.at - a.at),
-    })).filter((g) => g.messages.length > 0)
-  }, [inbox])
+    return MAIL_ACCOUNTS.map(([account]) => {
+      const messages = msgs.filter((m) => m.account === account).sort((a, b) => b.at - a.at)
+      const unread = messages.filter((m) => m.unread && !overlay.has(mailReadKey(m.account, m.id))).length
+      return { account, messages, unread }
+    })
+  }, [inbox, overlay])
 
+  /* 기본 선택: 미읽음 있는 계정 우선, 없으면 gmail. localStorage 로 마지막 선택 기억. */
+  const [accountTab, setAccountTab] = useState<'gmail' | 'naver'>(() => {
+    const saved = localStorage.getItem('mailAccountTab')
+    return saved === 'naver' ? 'naver' : 'gmail'
+  })
+  const tabInit = useRef(false)
+  useEffect(() => {
+    if (tabInit.current || !inbox) return
+    tabInit.current = true
+    if (localStorage.getItem('mailAccountTab')) return
+    const firstUnread = byAccount.find((g) => g.unread > 0)
+    if (firstUnread) setAccountTab(firstUnread.account)
+  }, [inbox, byAccount])
+  const selectTab = useCallback((acc: 'gmail' | 'naver') => {
+    setAccountTab(acc)
+    localStorage.setItem('mailAccountTab', acc)
+  }, [])
+
+  const activeMessages = useMemo(
+    () => byAccount.find((g) => g.account === accountTab)?.messages ?? [],
+    [byAccount, accountTab],
+  )
+  const inboxWindow = useInfiniteWindow(activeMessages)
+
+  /* 보낸 메일: 현재 탭 계정만 (account 필터) */
   const sentItems = useMemo(
-    () => [...(outboxEntry?.data?.items ?? [])].sort((a, b) => b.queued_at.localeCompare(a.queued_at)).slice(0, 5),
-    [outboxEntry],
+    () =>
+      [...(outboxEntry?.data?.items ?? [])]
+        .filter((o) => o.account === accountTab)
+        .sort((a, b) => b.queued_at.localeCompare(a.queued_at))
+        .slice(0, 5),
+    [outboxEntry, accountTab],
   )
 
   /* inbox 로드 시 오버레이 정리: 서버가 아직 unread=true 인 키만 남기고, unread=false(서버 정합) 키는 제거 — 영구 증식 방지 */
@@ -1385,17 +1455,31 @@ function MailView({
         <p className="plain-note">불러오는 중…</p>
       ) : inboxEntry.missing ? (
         <p className="plain-note">메일 동기본 없음 · 러너 확인</p>
-      ) : groups.length === 0 ? (
-        <p className="plain-note">없음</p>
       ) : (
-        groups.map((g) => (
-          <div key={g.account} className="mail-group">
-            <h2 className="wave-head mono" aria-label={`${g.label} ${g.messages.length}건`}>
-              {g.label}
-              <span className="wave-count">{g.messages.length}</span>
-            </h2>
+        <>
+          {/* 계정 탭: 뷰 토글·알림 탭과 같은 mono 텍스트 문법 (윤곽선 금지). 미읽음 수는 0 이면 생략 */}
+          <nav className="mail-account-tabs mono" aria-label="계정">
+            {byAccount.map((g, i) => (
+              <span key={g.account} className="mat-slot">
+                {i > 0 && <span className="vt-sep" aria-hidden="true">|</span>}
+                <button
+                  type="button"
+                  className={accountTab === g.account ? 'on' : ''}
+                  aria-pressed={accountTab === g.account}
+                  onClick={() => selectTab(g.account)}
+                >
+                  {g.account}
+                  {g.unread > 0 && <span className="mat-count"> {g.unread}</span>}
+                </button>
+              </span>
+            ))}
+          </nav>
+
+          {activeMessages.length === 0 ? (
+            <p className="plain-note">없음</p>
+          ) : (
             <div className="mail-list" role="list">
-              {g.messages.map((m) => {
+              {inboxWindow.visible.map((m) => {
                 const kindLabel = m.kind ? MAIL_KIND_LABEL[m.kind] : undefined
                 /* 오버레이가 서버 sync 보다 우선: 한 번 읽으면 unread=true 가 와도 회색 유지 */
                 const unread = m.unread && !overlay.has(mailReadKey(m.account, m.id))
@@ -1421,9 +1505,10 @@ function MailView({
                   </button>
                 )
               })}
+              {inboxWindow.hasMore && <div ref={inboxWindow.sentinelRef} className="scroll-sentinel" aria-hidden="true" />}
             </div>
-          </div>
-        ))
+          )}
+        </>
       )}
 
       {sentItems.length > 0 && (
@@ -2053,6 +2138,7 @@ function AgentView({
   const [selRaw, setSel] = useState<string | null>(null)
   const sel = selRaw ?? sessions[0]?.thread ?? 'new'
   const selected = sessions.find((s) => s.thread === sel)
+  const railWindow = useInfiniteWindow(sessions)
 
   /* 알림 → run 세션 선택: runId 가 속한 thread 로 (없으면 runId 자체가 thread) */
   useEffect(() => {
@@ -2081,7 +2167,8 @@ function AgentView({
   const onRailKey = (e: React.KeyboardEvent) => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
     e.preventDefault()
-    const order = ['new', ...sessions.map((s) => s.thread)]
+    /* 순회는 DOM 에 렌더된 세션(윈도 visible)만 대상 — 버튼 인덱스와 일치 유지 */
+    const order = ['new', ...railWindow.visible.map((s) => s.thread)]
     const i = Math.max(order.indexOf(sel), 0)
     const ni = Math.min(Math.max(i + (e.key === 'ArrowDown' ? 1 : -1), 0), order.length - 1)
     setSel(order[ni])
@@ -2101,7 +2188,7 @@ function AgentView({
         <button type="button" className={`sess-new mono${sel === 'new' ? ' sel' : ''}`} onClick={() => setSel('new')}>
           + 새 요청
         </button>
-        {sessions.map((s) => {
+        {railWindow.visible.map((s) => {
           const latest = s.turns[s.turns.length - 1]
           const statusText = latest.run ? runStatusText(latest.run) : '대기'
           const turnCount = s.turns.length
@@ -2123,6 +2210,7 @@ function AgentView({
             </button>
           )
         })}
+        {railWindow.hasMore && <div ref={railWindow.sentinelRef} className="scroll-sentinel" aria-hidden="true" />}
         {sessions.length === 0 && runnerEntry !== undefined && <p className="plain-note sess-empty">없음</p>}
       </nav>
 
@@ -2409,8 +2497,34 @@ export default function App() {
       list.push(a)
       byWave.set(a.wave, list)
     }
-    return { groups: [...byWave.entries()].sort((x, y) => y[0].localeCompare(x[0])), visibleCount: visible.length }
+    const sortedGroups = [...byWave.entries()].sort((x, y) => y[0].localeCompare(x[0]))
+    /* 평탄화된 행 목록 — 윈도잉 기준. 라인 넘버는 차수 내 인덱스로 미리 고정 (윈도와 무관하게 일관). */
+    const flatRows = sortedGroups.flatMap(([wave, rows]) =>
+      rows.map((app, idx) => ({ wave, app, idx })),
+    )
+    return { groups: sortedGroups, flatRows, visibleCount: visible.length }
   }, [apps, statusFilter, query])
+
+  /* 보드 행 윈도잉: 평탄화된 행 기준. 필터·검색 변경 시 step 으로 리셋. */
+  const boardWindow = useInfiniteWindow(
+    groups.flatRows,
+    30,
+    `${[...statusFilter].sort().join(',')}|${query.trim()}`,
+  )
+  /* 가시 행을 다시 차수별로 그룹핑 — 그룹 헤더는 가시 행이 1개 이상인 차수만 (차수 카운트는 전체 유지). */
+  const visibleGroups = useMemo(() => {
+    const fullCount = new Map(groups.groups.map(([wave, rows]) => [wave, rows.length]))
+    const acc: Array<{ wave: string; total: number; rows: Array<{ app: Application; idx: number }> }> = []
+    let cur: { wave: string; total: number; rows: Array<{ app: Application; idx: number }> } | null = null
+    for (const r of boardWindow.visible) {
+      if (!cur || cur.wave !== r.wave) {
+        cur = { wave: r.wave, total: fullCount.get(r.wave) ?? 0, rows: [] }
+        acc.push(cur)
+      }
+      cur.rows.push({ app: r.app, idx: r.idx })
+    }
+    return acc
+  }, [boardWindow.visible, groups.groups])
 
   const openApp = openId ? apps.find((a) => a.id === openId) : null
   const filtered = statusFilter.size > 0 || query.trim().length > 0
@@ -2613,13 +2727,13 @@ export default function App() {
               <span role="columnheader">상태</span>
               <span role="columnheader">메모</span>
             </div>
-            {groups.groups.map(([wave, rows]) => (
-              <section key={wave} className="wave-group" role="rowgroup">
-                <h2 className="wave-head mono" aria-label={`${wave} 차수 ${rows.length}건`}>
-                  {wave}
-                  <span className="wave-count">{rows.length}건</span>
+            {visibleGroups.map((g) => (
+              <section key={g.wave} className="wave-group" role="rowgroup">
+                <h2 className="wave-head mono" aria-label={`${g.wave} 차수 ${g.total}건`}>
+                  {g.wave}
+                  <span className="wave-count">{g.total}건</span>
                 </h2>
-                {rows.map((a, i) => (
+                {g.rows.map(({ app: a, idx }) => (
                   <div
                     key={a.id}
                     role="row"
@@ -2631,7 +2745,7 @@ export default function App() {
                     }}
                   >
                     <span role="cell" className="cell-num mono">
-                      {String(i + 1).padStart(2, '0')}
+                      {String(idx + 1).padStart(2, '0')}
                     </span>
                     <span role="cell" className="cell-main">
                       <span className="company">{a.company}</span>
@@ -2682,6 +2796,7 @@ export default function App() {
                 ))}
               </section>
             ))}
+            {boardWindow.hasMore && <div ref={boardWindow.sentinelRef} className="scroll-sentinel" aria-hidden="true" />}
             {groups.visibleCount === 0 && (
               <div className="empty">
                 <p>조건에 맞는 항목 없음</p>
