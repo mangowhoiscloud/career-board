@@ -1684,6 +1684,47 @@ function useRunEvents(token: string, run: RunnerRun | undefined): RunEvent[] {
 
 /* 한 turn 렌더 — Claude Code 문법: 헤더 라인(첫 turn만) → ❯ 프롬프트 에코 → ⏺ 이벤트 스트림 → 결과.
    세션은 같은 thread 의 turn 들을 시간순으로 이 컴포넌트를 반복 렌더해 ❯p1→resp1→❯p2→resp2 를 한 화면에 쌓는다. */
+/* 추론 상태줄 — Claude Code 인디케이터의 mango.career 번안.
+   캐릭터 = 단일 앰버 시그널(✶) 프레임 회전 + 옅은 맥동. 정적 '실행 중' 대신 살아 움직이는 상태:
+   위트 있는 진행어(약 4초 주기 회전) + 라이브 경과시간 + 모델 메타. */
+const THINK_GLYPHS = ['✶', '✸', '✹', '✺', '✷', '✦']
+const THINK_WORDS = ['여물리는', '톺아보는', '갈무리하는', '벼리는', '곱씹는', '추리는', '헤아리는', '짚어보는', '여투는', '벼려내는']
+
+function fmtElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  if (s < 60) return `${s}s`
+  return `${Math.floor(s / 60)}m ${s % 60}s`
+}
+
+function ThinkingStatus({ run }: { run: RunnerRun }) {
+  const startMs = useMemo(() => (run.started ? new Date(run.started).getTime() : Date.now()), [run.started])
+  const seed = useMemo(() => Math.floor(Math.random() * THINK_WORDS.length), [run.id])
+  const [tick, setTick] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const g = setInterval(() => setTick((t) => t + 1), 130) // 글리프 트윙클
+    const c = setInterval(() => setNow(Date.now()), 1000) // 경과시간
+    return () => {
+      clearInterval(g)
+      clearInterval(c)
+    }
+  }, [])
+  const glyph = THINK_GLYPHS[tick % THINK_GLYPHS.length]
+  const word = THINK_WORDS[(seed + Math.floor((now - startMs) / 4000)) % THINK_WORDS.length]
+  return (
+    <span className="cc-thinking mono" role="status" aria-label="추론 중">
+      <span className="cc-thinking-glyph" aria-hidden="true">
+        {glyph}
+      </span>
+      <span className="cc-thinking-word">{word} 중…</span>
+      <span className="cc-thinking-meta">
+        ({fmtElapsed(now - startMs)}
+        {run.model ? ` · ${run.model}` : ''})
+      </span>
+    </span>
+  )
+}
+
 function TurnDetail({ token, turn, types, showHead }: { token: string; turn: AgentTurn; types: RequestType[]; showHead: boolean }) {
   const run = turn.run
   const req = turn.req
@@ -1727,9 +1768,14 @@ function TurnDetail({ token, turn, types, showHead }: { token: string; turn: Age
         )
       })}
       {req && <p className="plain-note">대기 중 · 러너 주기 60초</p>}
-      {(run?.status === 'running' || run?.status === 'queued') && (
+      {run?.status === 'queued' && (
         <p className="plain-note">
-          {run.status === 'queued' ? '대기열' : `실행 중${run.started ? ` · 시작 ${hhmm(run.started)}` : ''}`}
+          대기열 · <CancelRunAction token={token} runId={run.id} />
+        </p>
+      )}
+      {run?.status === 'running' && (
+        <p className="plain-note cc-thinking-row">
+          <ThinkingStatus run={run} />
           {' · '}
           <CancelRunAction token={token} runId={run.id} />
         </p>

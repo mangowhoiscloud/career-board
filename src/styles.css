@@ -1249,6 +1249,42 @@ button {
   font-size: 12px;
   white-space: pre-wrap;
 }
+/* 추론 상태줄 — 단일 앰버 시그널(브랜드) + 위트 진행어 + 라이브 경과 */
+.cc-thinking-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.cc-thinking {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+.cc-thinking-glyph {
+  color: var(--amber);
+  animation: cc-twinkle 1.4s ease-in-out infinite;
+}
+.cc-thinking-word {
+  color: var(--amber);
+}
+.cc-thinking-meta {
+  color: var(--text-3);
+}
+@keyframes cc-twinkle {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cc-thinking-glyph {
+    animation: none;
+  }
+}
 .cc-text {
   margin: 8px 0;
 }
