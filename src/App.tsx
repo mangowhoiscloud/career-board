@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, fetchJsonFile, fetchTextFile,
-  updateTextFile, queueMailRead,
+  updateTextFile, queueMailRead, mailFeed, mailGet, mailMarkRead,
   markNotificationsRead, putJsonFile, whoami,
   type InboxData, type InboxMessage, type MailDraft, type MailDraftsData,
   type NotifFile, type Notification, type OutboxData, type OutboxItem,
@@ -241,6 +241,40 @@ function useInfiniteWindow<T>(items: T[], step = 30, resetKey?: string) {
 
   const visible = useMemo(() => items.slice(0, visibleCount), [items, visibleCount])
   return { visible, sentinelRef, hasMore }
+}
+
+/* 서버 메일 피드 어댑터 (httpMode 전용) — mail_messages 를 커서로 누적해 기존 InboxData 형태로 노출.
+   서버가 relevance=recruiting 필터링(채용 메일만). 목록은 경량(body 제외) — 본문은 열 때 mailGet.
+   blob 의 50건 캡이 없어 전량을 담는다(account별 페이지 누적, 안전상 account당 20페이지=1000건 캡).
+   nonce 를 올리면 재취득(새로고침). httpMode 가 아니면 undefined → 호출부가 blob 경로로 폴백. */
+function useServerInbox(token: string | null, nonce: number): Entry<InboxData> | undefined {
+  const [entry, setEntry] = useState<Entry<InboxData> | undefined>(undefined)
+  useEffect(() => {
+    if (!httpMode || !token) return
+    let live = true
+    void (async () => {
+      try {
+        const all: InboxMessage[] = []
+        for (const account of ['gmail', 'naver']) {
+          let cursor: string | null = null
+          for (let page = 0; page < 20; page++) {
+            const res = await mailFeed(token, account, cursor)
+            all.push(...res.messages.map((m) => ({ ...m, unread: !!m.unread })))
+            cursor = res.next_cursor
+            if (!cursor) break
+          }
+        }
+        if (live) {
+          setEntry({ data: { synced_at: new Date().toISOString(), messages: all },
+                     sha: null, etag: null, at: Date.now(), missing: false })
+        }
+      } catch {
+        if (live) setEntry({ data: null, sha: null, etag: null, at: Date.now(), missing: true })
+      }
+    })()
+    return () => { live = false }
+  }, [token, nonce])
+  return entry
 }
 
 /* requests/REQ-*.md 큐 파일 — 컴포저·메일 초안이 공유하는 단일 포맷 */
@@ -1265,6 +1299,7 @@ function MailView({
   runner,
   focus,
   onFocusDone,
+  onRefreshMail,
   onQueued,
 }: {
   token: string
@@ -1275,6 +1310,7 @@ function MailView({
   runner: RunnerState | null
   focus?: { subject: string; ts: number }
   onFocusDone: () => void
+  onRefreshMail: () => void
   onQueued: () => void
 }) {
   const [modal, setModal] = useState<MailModalState | null>(null)
@@ -1291,7 +1327,12 @@ function MailView({
      오버레이가 핵심 — 60초 inbox 재검증이 메일 서버 unread=true 로 덮어써도 회색을 유지한다. */
   const markRead = useCallback((m: InboxMessage) => {
     if (!m.unread) return
-    markMailRead(m.account, m.id)
+    markMailRead(m.account, m.id)  // 오버레이 즉시(서버 sync 보다 우선)
+    if (httpMode) {
+      // 서버 SSOT: DB unread=0 즉시 + read-queue(프로바이더 반영)는 엔드포인트가 처리.
+      void mailMarkRead(token, m.account, m.id).catch(() => {})
+      return
+    }
     if (inboxEntry?.data) {
       patchEntry('inbox', {
         ...inboxEntry.data,
@@ -1302,10 +1343,18 @@ function MailView({
     void queueMailRead(token, m.account, m.id, user).catch(() => {})
   }, [inboxEntry, token, user])
 
+  /* 목록은 경량(body 제외) — httpMode 에선 열 때 단건 본문을 조회해 모달을 갱신. */
   const openMail = useCallback((m: InboxMessage) => {
     setModal({ kind: 'message', msg: m })
     markRead(m)
-  }, [markRead])
+    if (httpMode && !m.body) {
+      void mailGet(token, m.account, m.id)
+        .then((full) => setModal((cur) =>
+          cur && cur.kind === 'message' && cur.msg.account === m.account && cur.msg.id === m.id
+            ? { kind: 'message', msg: full } : cur))
+        .catch(() => {})
+    }
+  }, [markRead, token])
 
   /* 알림 → 메일 진입: subject 일치 메일을 모달로 (없으면 뷰 전환만). 진입 메일도 동일 오버레이 반영. */
   useEffect(() => {
@@ -1316,8 +1365,7 @@ function MailView({
       msgs.find((x) => x.subject && (focus.subject.includes(x.subject) || x.subject.includes(focus.subject)))
     if (m) {
       selectTab(m.account)
-      setModal({ kind: 'message', msg: m })
-      markRead(m)
+      openMail(m)
     }
     onFocusDone()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1362,7 +1410,7 @@ function MailView({
         const p = got.data
         if (new Date(p.at).getTime() < pollingSince) return
         if (p.pct >= 100) {
-          await revalidate(token, 'inbox').catch(() => {})
+          onRefreshMail()  // httpMode: 테이블 재취득 / GitHub: blob 재검증
           if (!live) return
           setSync({ kind: 'done', at: hhmm(new Date().toISOString()) })
           return
@@ -2339,7 +2387,14 @@ export default function App() {
 
   const boardEntry = useEntry<BoardData>('applications')
   const notifEntry = useEntry<NotifFile>('notifications')
-  const inboxEntry = useEntry<InboxData>('inbox')
+  const blobInbox = useEntry<InboxData>('inbox')
+  const [mailNonce, setMailNonce] = useState(0)
+  const serverInbox = useServerInbox(token, mailNonce)  // httpMode: mail_messages 커서 피드
+  const inboxEntry = httpMode ? serverInbox : blobInbox
+  const refreshMail = useCallback(() => {
+    if (httpMode) setMailNonce((n) => n + 1)            // 테이블 재취득
+    else if (token) void revalidate(token, 'inbox').catch(() => {})
+  }, [token])
   const outboxEntry = useEntry<OutboxData>('outbox')
   const draftsEntry = useEntry<MailDraftsData>('mail-drafts')
   const runnerEntry = useEntry<RunnerState>('runner-state')
@@ -2703,6 +2758,7 @@ export default function App() {
           runner={runnerEntry?.data ?? null}
           focus={mailFocus}
           onFocusDone={() => setMailFocus(undefined)}
+          onRefreshMail={refreshMail}
           onQueued={() => void revalidate(token, 'outbox').catch(() => {})}
         />
       ) : view === 'agent' ? (

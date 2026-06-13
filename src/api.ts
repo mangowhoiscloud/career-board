@@ -1,5 +1,5 @@
 import type { BoardData } from './types'
-import { httpMode, cpReadState, cpWriteState, cpMe } from './backend'
+import { httpMode, cpReadState, cpWriteState, cpMe, API_BASE } from './backend'
 
 const OWNER = 'mangowhoiscloud'
 const REPO = 'career-data'
@@ -169,6 +169,50 @@ export interface InboxMessage {
 export interface InboxData {
   synced_at: string
   messages: InboxMessage[]
+}
+
+/* ── 메일 정규화 테이블 API (control-plane, httpMode 전용) ──────────────
+   blob inbox.json 대신 mail_messages 를 커서 페이지네이션으로 읽는다. 서버가 relevance=recruiting
+   필터링 — 보드는 채용 메일만 받는다. 목록은 경량(body 제외) → 본문은 열 때 mailGet 단건 조회. */
+export interface MailFeedPage {
+  messages: InboxMessage[]
+  next_cursor: string | null
+}
+
+function cpBearer(token: string): Record<string, string> {
+  return { Authorization: `Bearer ${token}` }
+}
+
+export async function mailFeed(
+  token: string,
+  account?: string,
+  cursor?: string | null,
+  limit = 50,
+): Promise<MailFeedPage> {
+  const q = new URLSearchParams({ relevance: 'recruiting', limit: String(limit) })
+  if (account) q.set('account', account)
+  if (cursor) q.set('cursor', cursor)
+  const res = await fetch(`${API_BASE}/api/mail?${q.toString()}`, { headers: cpBearer(token) })
+  if (res.status === 401) throw new Error('세션이 만료되었습니다 (401)')
+  if (!res.ok) throw new Error(`메일 로드 실패 (${res.status})`)
+  return (await res.json()) as MailFeedPage
+}
+
+export async function mailGet(token: string, account: string, id: string): Promise<InboxMessage> {
+  const res = await fetch(
+    `${API_BASE}/api/mail/${encodeURIComponent(account)}/${encodeURIComponent(id)}`,
+    { headers: cpBearer(token) },
+  )
+  if (!res.ok) throw new Error(`메일 본문 로드 실패 (${res.status})`)
+  return (await res.json()) as InboxMessage
+}
+
+/* 읽음 — 서버 unread=0 즉시(기기 간 동기) + read-queue 적재(ingest 가 프로바이더 반영)를 서버가 처리. */
+export async function mailMarkRead(token: string, account: string, id: string): Promise<void> {
+  await fetch(
+    `${API_BASE}/api/mail/${encodeURIComponent(account)}/${encodeURIComponent(id)}/read`,
+    { method: 'POST', headers: cpBearer(token) },
+  )
 }
 
 export interface OutboxItem {
