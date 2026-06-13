@@ -3,12 +3,13 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, fetchJsonFile, fetchTextFile,
-  updateTextFile,
+  updateTextFile, queueMailRead,
   markNotificationsRead, putJsonFile, whoami,
   type InboxData, type InboxMessage, type NotifFile, type Notification, type OutboxData, type OutboxItem,
   type RequestType, type RunEvent, type RunnerRun, type RunnerState, type SdkCredit,
 } from './api'
 import { clearStore, patchEntry, prefetchAll, revalidate, useEntry, type Entry, type StoreKey } from './store'
+import { mailReadKey, markMailRead, pruneMailRead, useMailReadOverlay } from './mailRead'
 import type { Application, BoardData, Status } from './types'
 import { STATUS_COLOR, STATUS_LABEL, STATUS_ORDER } from './types'
 
@@ -204,12 +205,13 @@ function useDialog(onClose: () => void) {
 }
 
 /* requests/REQ-*.md 큐 파일 — 컴포저·메일 초안이 공유하는 단일 포맷 */
-function reqFileBody(opts: { id: string; typeId: string; label: string; combo: string; model: string; user: string; prompt: string; resume?: string }): string {
+function reqFileBody(opts: { id: string; typeId: string; label: string; combo: string; model: string; user: string; prompt: string; resume?: string; thread?: string }): string {
   return [
     `# ${opts.id} · ${opts.label}`,
     '',
     `- type: ${opts.typeId}`,
     `- runner: ${JSON.stringify({ combo: opts.combo, model: opts.model })}`,
+    ...(opts.thread ? [`- thread: ${opts.thread}`] : []),
     ...(opts.resume ? [`- resume: ${opts.resume}`] : []),
     `- requested-by: board:${opts.user}`,
     `- requested-at: ${new Date().toISOString()}`,
@@ -219,7 +221,7 @@ function reqFileBody(opts: { id: string; typeId: string; label: string; combo: s
     '',
     opts.prompt,
     '',
-    '> 처리 규약: 러너 또는 로컬 세션이 requests/ 를 확인해 처리한다. 완료 시 status: done 으로 수정하고 산출물 경로를 기재한다.',
+    '> 처리: runnerd(launchd)가 60초 루프로 Agent SDK in-process 집행. 완료 시 status: done + 산출물 경로 기재.',
     '',
   ].join('\n')
 }
@@ -1227,15 +1229,40 @@ function MailView({
 
   const inbox = inboxEntry?.data ?? null
   const synced = inbox?.synced_at ?? ''
+  const overlayKeys = useMailReadOverlay()
+  const overlay = useMemo(() => new Set(overlayKeys), [overlayKeys])
 
-  /* 알림 → 메일 진입: subject 일치 메일을 모달로 (없으면 뷰 전환만) */
+  /* 읽음 처리: localStorage 오버레이 즉시(서버 sync 보다 우선) + 낙관적 캐시 patch + read-queue 커밋(러너가 서버 반영).
+     오버레이가 핵심 — 60초 inbox 재검증이 메일 서버 unread=true 로 덮어써도 회색을 유지한다. */
+  const markRead = useCallback((m: InboxMessage) => {
+    if (!m.unread) return
+    markMailRead(m.account, m.id)
+    if (inboxEntry?.data) {
+      patchEntry('inbox', {
+        ...inboxEntry.data,
+        messages: inboxEntry.data.messages.map((x) =>
+          x.account === m.account && x.id === m.id ? { ...x, unread: false } : x),
+      }, inboxEntry.sha)
+    }
+    void queueMailRead(token, m.account, m.id, user).catch(() => {})
+  }, [inboxEntry, token, user])
+
+  const openMail = useCallback((m: InboxMessage) => {
+    setModal({ kind: 'message', msg: m })
+    markRead(m)
+  }, [markRead])
+
+  /* 알림 → 메일 진입: subject 일치 메일을 모달로 (없으면 뷰 전환만). 진입 메일도 동일 오버레이 반영. */
   useEffect(() => {
     if (!focus) return
     const msgs = inbox?.messages ?? []
     const m =
       msgs.find((x) => x.subject === focus.subject) ??
       msgs.find((x) => x.subject && (focus.subject.includes(x.subject) || x.subject.includes(focus.subject)))
-    if (m) setModal({ kind: 'message', msg: m })
+    if (m) {
+      setModal({ kind: 'message', msg: m })
+      markRead(m)
+    }
     onFocusDone()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus])
@@ -1320,6 +1347,13 @@ function MailView({
     [outboxEntry],
   )
 
+  /* inbox 로드 시 오버레이 정리: 서버가 아직 unread=true 인 키만 남기고, unread=false(서버 정합) 키는 제거 — 영구 증식 방지 */
+  useEffect(() => {
+    if (!inbox) return
+    const stillUnread = new Set(inbox.messages.filter((m) => m.unread).map((m) => mailReadKey(m.account, m.id)))
+    pruneMailRead(stillUnread)
+  }, [inbox])
+
   return (
     <section className="mailbox" aria-label="메일함">
       <div className="mail-actions mono">
@@ -1363,13 +1397,15 @@ function MailView({
             <div className="mail-list" role="list">
               {g.messages.map((m) => {
                 const kindLabel = m.kind ? MAIL_KIND_LABEL[m.kind] : undefined
+                /* 오버레이가 서버 sync 보다 우선: 한 번 읽으면 unread=true 가 와도 회색 유지 */
+                const unread = m.unread && !overlay.has(mailReadKey(m.account, m.id))
                 return (
                   <button
                     key={`${m.account}-${m.id}`}
                     type="button"
                     role="listitem"
-                    className={`mail-row${m.unread ? ' unread' : ''}`}
-                    onClick={() => setModal({ kind: 'message', msg: m })}
+                    className={`mail-row${unread ? ' unread' : ''}`}
+                    onClick={() => openMail(m)}
                   >
                     <span className="mail-main">
                       <span className="mail-top">
@@ -1450,9 +1486,19 @@ export interface PendingReq {
   model: string
   prompt: string
   at: string
+  /* 이어가는 thread (없으면 자기 id 가 곧 thread = 새 세션) */
+  thread?: string
 }
 
-type AgentSession = { id: string; ms: number; run?: RunnerRun; req?: PendingReq }
+/* 한 turn = run 또는 대기 REQ. run 이 있으면 run, 없으면 req (제출 직후 러너 흡수 전) */
+type AgentTurn = { id: string; ms: number; run?: RunnerRun; req?: PendingReq }
+/* 한 세션 = 같은 thread 의 turn 들을 시간순 누적 (Claude Code 멀티턴 핑퐁) */
+type AgentSession = { thread: string; ms: number; title: string; latestStatus?: RunnerRun['status']; turns: AgentTurn[] }
+
+/* turn 의 thread 키: run.thread → run.id, req.thread → req.id 순 (러너가 thread 미게시 시 run id 가 thread) */
+function turnThread(t: AgentTurn): string {
+  return t.run?.thread ?? t.run?.id ?? t.req?.thread ?? t.req?.id ?? ''
+}
 
 /* 외부 취소 표면: REQ 파일을 cancel-requested로 전이 — 러너가 60초 내 집행 중단 */
 function CancelRunAction({ token, runId }: { token: string; runId: string }) {
@@ -1553,10 +1599,11 @@ function useRunEvents(token: string, run: RunnerRun | undefined): RunEvent[] {
   return run?.events_tail ?? []
 }
 
-/* 세션 트랜스크립트 — Claude Code 문법: 헤더 라인 → ❯ 프롬프트 에코 → ⏺ 이벤트 스트림 → 결과 */
-function SessionDetail({ token, session, types }: { token: string; session: AgentSession; types: RequestType[] }) {
-  const run = session.run
-  const req = session.req
+/* 한 turn 렌더 — Claude Code 문법: 헤더 라인(첫 turn만) → ❯ 프롬프트 에코 → ⏺ 이벤트 스트림 → 결과.
+   세션은 같은 thread 의 turn 들을 시간순으로 이 컴포넌트를 반복 렌더해 ❯p1→resp1→❯p2→resp2 를 한 화면에 쌓는다. */
+function TurnDetail({ token, turn, types, showHead }: { token: string; turn: AgentTurn; types: RequestType[]; showHead: boolean }) {
+  const run = turn.run
+  const req = turn.req
   const events = useRunEvents(token, run)
   const startEv = events.find((e) => e.type === 'start')
   const stream = events.filter((e) => e.type !== 'start')
@@ -1565,11 +1612,11 @@ function SessionDetail({ token, session, types }: { token: string; session: Agen
     `${run?.combo ?? req?.combo ?? '–'}/${run?.model ?? req?.model ?? '–'} · ${typeLabelOf(types, run?.type ?? req?.type ?? '')}`
 
   return (
-    <div className="agent-detail">
-      <p className="cc-head mono">{head}</p>
+    <div className="agent-turn">
+      {showHead && <p className="cc-head mono">{head}</p>}
       <div className="cc-prompt mono">
         <span className="cc-caret" aria-hidden="true">❯</span>
-        <span className="cc-prompt-text">{run?.prompt ?? req?.prompt}</span>
+        <span className="cc-prompt-text">{sessTitleText(run?.prompt ?? req?.prompt ?? '')}</span>
       </div>
       {stream.map((ev, i) => {
         if (ev.type === 'tool')
@@ -1607,6 +1654,17 @@ function SessionDetail({ token, session, types }: { token: string; session: Agen
       {run?.status === 'cancelled' && <p className="plain-note">중단됨</p>}
       {run?.status === 'failed' && <p className="cc-error">{run.error || '실패 사유 없음'}</p>}
       {run?.status === 'done' && <RunOutput token={token} run={run} />}
+    </div>
+  )
+}
+
+/* 세션 누적 트랜스크립트 — 한 thread 의 모든 turn 을 시간순 렌더 (멀티턴 핑퐁) */
+function SessionDetail({ token, session, types }: { token: string; session: AgentSession; types: RequestType[] }) {
+  return (
+    <div className="agent-detail">
+      {session.turns.map((t, i) => (
+        <TurnDetail key={t.id} token={token} turn={t} types={types} showHead={i === 0} />
+      ))}
     </div>
   )
 }
@@ -1733,7 +1791,11 @@ function AgentComposer({
   state,
   types,
   stale,
+  thread,
   resumeSession,
+  lockType,
+  lockCombo,
+  lockModel,
   onSubmitted,
 }: {
   token: string
@@ -1741,9 +1803,14 @@ function AgentComposer({
   state: RunnerState | null
   types: RequestType[]
   stale?: boolean
-  resumeSession?: string // 선택 세션의 Claude session_id — 후속 입력을 같은 맥락에서 (resume)
+  thread?: string // 이어갈 세션 키 (없으면 새 세션 = 새 REQ id 가 thread)
+  resumeSession?: string // 선택 세션 직전 done turn 의 Claude session_id — 같은 맥락에서 이어감 (resume)
+  lockType?: string // thread 이어가기 시 직전 turn 의 유형
+  lockCombo?: string // thread 이어가기 시 직전 turn 의 콤보 (프로바이더 일관성)
+  lockModel?: string // thread 이어가기 시 직전 turn 의 모델
   onSubmitted: (p: PendingReq) => void
 }) {
+  const locked = thread !== undefined
   const combos = useMemo(() => state?.combos ?? [], [state])
   /* 기본 유형 = terminal (CC 프롬프트 관성) — 러너 목록에 없으면 첫 유형 */
   const defaultType = (list: RequestType[]) => list.find((t) => t.id === 'terminal')?.id ?? list[0]?.id ?? ''
@@ -1760,14 +1827,21 @@ function AgentComposer({
     [combos, needs],
   )
   const [comboId, setComboId] = useState('')
-  const combo = eligible.find((c) => c.id === comboId)
   const [modelId, setModelId] = useState('')
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<string | null>(null)
 
-  /* 적격 콤보 변동 시: localStorage 선호 콤보 → 첫 ready 콤보 순 */
+  /* thread 이어가기 = 직전 turn 의 유형·콤보·모델 고정 (프로바이더 일관성). 새 세션이면 자유 선택. */
+  const effType = locked ? (lockType ?? typeId) : typeId
+  const effComboId = locked ? (lockCombo ?? comboId) : comboId
+  const effModelId = locked ? (lockModel ?? modelId) : modelId
+  /* 고정 콤보는 needs 필터를 우회해 전체 combos 에서 조회 — 이어가기는 능력 경계를 다시 적용하지 않는다 */
+  const combo = (locked ? combos : eligible).find((c) => c.id === effComboId)
+
+  /* 적격 콤보 변동 시: localStorage 선호 콤보 → 첫 ready 콤보 순 (새 세션 전용) */
   useEffect(() => {
+    if (locked) return
     if (!eligible.some((c) => c.id === comboId && c.ready)) {
       const stored = localStorage.getItem(COMBO_KEY)
       const pick =
@@ -1775,26 +1849,28 @@ function AgentComposer({
       setComboId(pick?.id ?? '')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eligible])
+  }, [eligible, locked])
 
-  /* 콤보 변경 시: localStorage 선호 모델 → 기본 모델 순 */
+  /* 콤보 변경 시: localStorage 선호 모델 → 기본 모델 순 (새 세션 전용) */
   useEffect(() => {
+    if (locked) return
+    const c = eligible.find((x) => x.id === comboId)
     const stored = localStorage.getItem(MODEL_KEY)
     const m =
-      (stored && combo?.models.find((x) => x.id === stored)) ||
-      combo?.models.find((x) => x.default) ||
-      combo?.models[0]
+      (stored && c?.models.find((x) => x.id === stored)) ||
+      c?.models.find((x) => x.default) ||
+      c?.models[0]
     setModelId(m?.id ?? '')
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [comboId])
+  }, [comboId, locked])
 
-  /* 선택한 콤보·모델 영속 — 메일 '에이전트 초안'이 참조 */
+  /* 선택한 콤보·모델 영속 — 메일 '에이전트 초안'이 참조 (새 세션 선택만; 고정 이어가기는 선호를 덮지 않음) */
   useEffect(() => {
-    if (comboId) localStorage.setItem(COMBO_KEY, comboId)
-  }, [comboId])
+    if (!locked && comboId) localStorage.setItem(COMBO_KEY, comboId)
+  }, [comboId, locked])
   useEffect(() => {
-    if (modelId) localStorage.setItem(MODEL_KEY, modelId)
-  }, [modelId])
+    if (!locked && modelId) localStorage.setItem(MODEL_KEY, modelId)
+  }, [modelId, locked])
 
   const submit = async () => {
     if (!prompt.trim() || !combo || !combo.ready) return
@@ -1803,16 +1879,22 @@ function AgentComposer({
     try {
       const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12)
       const id = `REQ-${ts}`
-      const label = typeLabelOf(types, typeId)
-      const body = reqFileBody({ id, typeId, label, combo: combo.id, model: modelId, user, prompt: prompt.trim(), resume: resumeSession })
+      /* 새 세션 = 자기 id 가 thread. 이어가기 = 선택 thread 유지. */
+      const reqThread = thread ?? id
+      const label = typeLabelOf(types, effType)
+      const body = reqFileBody({
+        id, typeId: effType, label, combo: combo.id, model: effModelId, user,
+        prompt: prompt.trim(), resume: resumeSession, thread: reqThread,
+      })
       await createFile(token, `requests/${id}.md`, body, `request: ${label} (board:${user})`)
       const pendingReq: PendingReq = {
         id,
-        type: typeId,
+        type: effType,
         combo: combo.id,
-        model: modelId,
+        model: effModelId,
         prompt: prompt.trim(),
         at: new Date().toISOString(),
+        thread: reqThread,
       }
       setPrompt('')
       onSubmitted(pendingReq)
@@ -1855,24 +1937,26 @@ function AgentComposer({
               void submit()
             }}
             rows={3}
-            placeholder={resumeSession ? "이어서 요청… (같은 세션 맥락)" : "새 요청…"}
+            placeholder={locked ? "이어서 입력…" : "새 요청…"}
             aria-label="프롬프트"
           />
         </div>
-        {/* 하단 칩 행: 유형·경로·모델 텍스트 칩(Cursor 컴포저 문법) 좌측, 실행 우측 */}
+        {/* 하단 칩 행: 유형·경로·모델 텍스트 칩(Cursor 컴포저 문법) 좌측, 실행 우측.
+            thread 이어가기 시엔 직전 turn 의 설정으로 고정 — 칩 비활성. */}
         <div className="cc-chips">
           <ConfigChip
             ariaLabel="유형"
-            text={typeLabelOf(types, typeId)}
-            value={typeId}
+            text={typeLabelOf(types, effType)}
+            value={effType}
+            disabled={locked}
             options={types.map((t) => ({ id: t.id, label: t.label }))}
             onPick={setTypeId}
           />
           <ConfigChip
             ariaLabel="실행 경로"
             text={combo?.label ?? (eligible.length === 0 ? '경로 없음' : '경로 선택')}
-            value={comboId}
-            disabled={eligible.length === 0}
+            value={effComboId}
+            disabled={locked || eligible.length === 0}
             options={eligible.map((c) => ({
               id: c.id,
               label: c.label,
@@ -1883,9 +1967,9 @@ function AgentComposer({
           />
           <ConfigChip
             ariaLabel="모델"
-            text={combo?.models.find((m) => m.id === modelId)?.label ?? '–'}
-            value={modelId}
-            disabled={!combo}
+            text={combo?.models.find((m) => m.id === effModelId)?.label ?? '–'}
+            value={effModelId}
+            disabled={locked || !combo}
             options={(combo?.models ?? []).map((m) => ({ id: m.id, label: m.label }))}
             onPick={setModelId}
           />
@@ -1935,26 +2019,59 @@ function AgentView({
   const types = state?.request_types?.length ? state.request_types : FALLBACK_TYPES
   const runs = useMemo(() => state?.recent_runs ?? [], [state])
 
+  /* 세션 = thread 그룹. turn(run·대기 REQ)을 thread 별로 묶어 시간순 누적. */
   const sessions = useMemo<AgentSession[]>(() => {
     /* 러너가 집행을 시작하면 해당 REQ 의 대기 항목은 run 으로 흡수 (run id = REQ id 의 RUN 치환) */
     const visiblePending = pending.filter((p) => !runs.some((r) => r.id === runIdOf(p.id)))
-    return [
+    const turns: AgentTurn[] = [
       ...visiblePending.map((p) => ({ id: p.id, ms: new Date(p.at).getTime(), req: p })),
       ...runs.map((r) => ({ id: r.id, ms: runStartMs(r), run: r })),
-    ].sort((a, b) => b.ms - a.ms)
-  }, [pending, runs])
+    ]
+    const byThread = new Map<string, AgentTurn[]>()
+    for (const t of turns) {
+      const key = turnThread(t)
+      const arr = byThread.get(key) ?? []
+      arr.push(t)
+      byThread.set(key, arr)
+    }
+    const list: AgentSession[] = []
+    for (const [thread, arr] of byThread) {
+      arr.sort((a, b) => a.ms - b.ms) // turn 시간 오름차순 (트랜스크립트 누적 순서)
+      const first = arr[0]
+      const latest = arr[arr.length - 1]
+      list.push({
+        thread,
+        ms: latest.ms,
+        title: `${typeLabelOf(types, first.run?.type ?? first.req?.type ?? '')} · ${sessTitleText(first.run?.prompt ?? first.req?.prompt ?? '')}`,
+        latestStatus: latest.run?.status,
+        turns: arr,
+      })
+    }
+    return list.sort((a, b) => b.ms - a.ms) // 세션은 최근 turn 기준 내림차순
+  }, [pending, runs, types])
 
   const [selRaw, setSel] = useState<string | null>(null)
-  const sel = selRaw ?? sessions[0]?.id ?? 'new'
-  const selected = sessions.find((s) => s.id === sel)
+  const sel = selRaw ?? sessions[0]?.thread ?? 'new'
+  const selected = sessions.find((s) => s.thread === sel)
 
-  /* 알림 → run 세션 선택 */
+  /* 알림 → run 세션 선택: runId 가 속한 thread 로 (없으면 runId 자체가 thread) */
   useEffect(() => {
     if (!focus) return
-    setSel(focus.runId)
+    const run = runs.find((r) => r.id === focus.runId)
+    setSel(run?.thread ?? focus.runId)
     onFocusDone()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus])
+
+  /* 선택 세션의 직전 done turn — 후속 입력의 resume 토큰·고정 콤보 출처 (프로바이더 무관) */
+  const lastDone = useMemo(() => {
+    const ts = selected?.turns ?? []
+    for (let i = ts.length - 1; i >= 0; i--) if (ts[i].run?.status === 'done') return ts[i].run
+    return undefined
+  }, [selected])
+  const lastTurn = selected?.turns[selected.turns.length - 1]
+  const lastTurnRun = lastTurn?.run
+  const lastTurnReq = lastTurn?.req
 
   const aliveAt = state?.runner_alive_at ? new Date(state.runner_alive_at).getTime() : null
   const runnerStale = aliveAt !== null && Date.now() - aliveAt > RUNNER_STALE_MS
@@ -1964,16 +2081,17 @@ function AgentView({
   const onRailKey = (e: React.KeyboardEvent) => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
     e.preventDefault()
-    const order = ['new', ...sessions.map((s) => s.id)]
+    const order = ['new', ...sessions.map((s) => s.thread)]
     const i = Math.max(order.indexOf(sel), 0)
     const ni = Math.min(Math.max(i + (e.key === 'ArrowDown' ? 1 : -1), 0), order.length - 1)
     setSel(order[ni])
     railRef.current?.querySelectorAll('button')[ni]?.focus()
   }
 
+  /* 세션 도트 = 최근 turn 상태: 실행 중=앰버, 실패=red, 그 외=음소거 */
   const sessDot = (s: AgentSession): string => {
-    if (s.run?.status === 'running') return 'var(--amber)'
-    if (s.run?.status === 'failed') return 'var(--danger)'
+    if (s.latestStatus === 'running') return 'var(--amber)'
+    if (s.latestStatus === 'failed') return 'var(--danger)'
     return 'var(--text-3)'
   }
 
@@ -1984,21 +2102,23 @@ function AgentView({
           + 새 요청
         </button>
         {sessions.map((s) => {
-          const statusText = s.run ? runStatusText(s.run) : '대기'
-          const title = `${typeLabelOf(types, s.run?.type ?? s.req?.type ?? '')} · ${sessTitleText(s.run?.prompt ?? s.req?.prompt ?? '')}`
+          const latest = s.turns[s.turns.length - 1]
+          const statusText = latest.run ? runStatusText(latest.run) : '대기'
+          const turnCount = s.turns.length
           return (
             <button
-              key={s.id}
+              key={s.thread}
               type="button"
-              className={`sess-row${sel === s.id ? ' sel' : ''}`}
-              onClick={() => setSel(s.id)}
+              className={`sess-row${sel === s.thread ? ' sel' : ''}`}
+              onClick={() => setSel(s.thread)}
             >
               <span className="sess-line">
                 <span className="dot sess-dot" style={{ background: sessDot(s) }} aria-hidden="true" />
-                <span className="sess-title">{title}</span>
+                <span className="sess-title">{s.title}</span>
               </span>
               <span className="sess-sub mono">
                 {fmtWhen(s.ms)} · {statusText}
+                {turnCount > 1 && ` · ${turnCount}턴`}
               </span>
             </button>
           )
@@ -2014,17 +2134,23 @@ function AgentView({
         )}
         {state?.sdk_credit && <SdkCreditLine credit={state.sdk_credit} />}
         {sel !== 'new' && selected && <SessionDetail token={token} session={selected} types={types} />}
-        {/* 터미널 REPL: 세션을 보는 중에도 입력부는 본문 하단 상시 — 입력하면 새 REQ 세션 생성·선택 */}
+        {/* 터미널 REPL: 세션을 보는 중에도 입력부는 본문 하단 상시.
+            새 세션이면 자유 컴포저, thread 선택 중이면 직전 turn 의 콤보·모델로 고정해 이어감(resume). */}
         <AgentComposer
           token={token}
           user={user}
           state={state}
           types={types}
           stale={runnerStale}
-          resumeSession={selected?.run?.combo === 'anthropic-subscription' || selected?.run?.combo === 'anthropic-api_key' ? selected?.run?.session_id : undefined}
+          thread={sel !== 'new' && selected ? selected.thread : undefined}
+          resumeSession={lastDone?.session_id}
+          lockType={lastTurnRun?.type ?? lastTurnReq?.type}
+          lockCombo={lastTurnRun?.combo ?? lastTurnReq?.combo ?? undefined}
+          lockModel={lastTurnRun?.model ?? lastTurnReq?.model}
           onSubmitted={(p) => {
             onPendingAdd(p)
-            setSel(p.id)
+            /* 새 turn 이 누적되도록 그 thread 선택 유지 (새 세션이면 새 thread = p.thread) */
+            setSel(p.thread ?? p.id)
           }}
         />
       </div>

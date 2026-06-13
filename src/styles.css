@@ -1160,6 +1160,12 @@ button {
 .agent-detail {
   max-width: 680px;
 }
+/* 멀티턴 누적: 다음 turn 의 ❯ 프롬프트는 헤어라인으로 직전 응답과 구분 (박스·틱 없음) */
+.agent-turn + .agent-turn {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
 
 /* ── 세션 트랜스크립트: Claude Code 문법 ── */
 /* 세션 헤더 라인: 콤보·모델·유형 (start 이벤트) */

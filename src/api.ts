@@ -128,6 +128,18 @@ export async function fetchTextFile(token: string, path: string): Promise<string
   return b64decodeUtf8(json.content)
 }
 
+/* 메일 읽음 요청 큐 — 보드 append, 러너가 메일 서버(Gmail UNREAD 제거 / Naver \Seen)에 반영.
+   outbox와 같은 패턴(보드는 메일 서버 직접 접근 불가). 최신본 재취득 후 1커밋. */
+export async function queueMailRead(token: string, account: string, id: string, user: string): Promise<void> {
+  const path = 'data/mail/read-queue.json'
+  const fetched = await fetchJsonFile<{ items: Array<{ account: string; id: string; at: string }> }>(token, path)
+  const items = fetched?.data?.items ?? []
+  if (items.some((x) => x.account === account && x.id === id)) return
+  items.push({ account, id, at: new Date().toISOString() })
+  await putJsonFile(token, path, { items: items.slice(-200) }, fetched?.sha ?? null,
+    `mail: read ${account}:${id} (board:${user})`)
+}
+
 /* ── 메일함: 러너가 동기화하는 inbox / 보드가 큐잉하는 outbox ── */
 
 export interface InboxMessage {
@@ -202,6 +214,8 @@ export interface RunnerRun {
   status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
   started: string | null
   ended: string | null
+  /* 멀티턴 묶음 키 — 같은 thread 의 run 들이 한 세션(누적 트랜스크립트). 없으면 run id 가 곧 thread. */
+  thread?: string
   type: string
   combo: string | null
   model: string
