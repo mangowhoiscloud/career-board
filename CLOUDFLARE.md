@@ -11,12 +11,11 @@
 1. Cloudflare 대시보드 → Workers & Pages → **Create → Pages → Connect to Git** → `mangowhoiscloud/career` 선택.
 2. 빌드 설정:
    - Framework preset: **None** (Vite)
-   - Build command: `npm run build`
+   - **Build command: `npm run build:cf`**  ← control-plane 모드(VITE_API_BASE·VITE_BASE=/ 가 스크립트에
+     박혀 있음). 기본 `npm run build`로 하면 GitHub PAT 모드로 빌드되니 반드시 `build:cf`.
    - Build output directory: `dist`
-3. **환경 변수**(Production + Preview):
-   - `VITE_API_BASE` = `https://career-control-plane.fly.dev`
-   - `VITE_BASE` = `/`  ← 루트 도메인이므로 (GitHub Pages의 `/career/`가 아님)
-4. Save & Deploy → `mango-career.pages.dev`(또는 프로젝트명).
+3. (별도 env 불필요 — `build:cf`가 VITE_API_BASE/VITE_BASE를 주입. CF UI에 env 안 넣어도 됨.)
+4. Save & Deploy → `career.<subdomain>.workers.dev`(Worker) 또는 `*.pages.dev`.
 5. SPA 라우팅: `wrangler.jsonc`의 `assets.not_found_handling: single-page-application`이 네이티브
    처리(새로고침/딥링크 → index.html). `_redirects`는 쓰지 않는다(Workers Assets에서 `/* /index.html
    200`은 무한루프로 거부됨 — code 100324).
