@@ -187,6 +187,7 @@ export interface RunnerRun {
   combo: string | null
   model: string
   prompt: string
+  session_id?: string
   events_tail?: RunEvent[]
   output?: string | null
   error?: string

@@ -203,12 +203,13 @@ function useDialog(onClose: () => void) {
 }
 
 /* requests/REQ-*.md 큐 파일 — 컴포저·메일 초안이 공유하는 단일 포맷 */
-function reqFileBody(opts: { id: string; typeId: string; label: string; combo: string; model: string; user: string; prompt: string }): string {
+function reqFileBody(opts: { id: string; typeId: string; label: string; combo: string; model: string; user: string; prompt: string; resume?: string }): string {
   return [
     `# ${opts.id} · ${opts.label}`,
     '',
     `- type: ${opts.typeId}`,
     `- runner: ${JSON.stringify({ combo: opts.combo, model: opts.model })}`,
+    ...(opts.resume ? [`- resume: ${opts.resume}`] : []),
     `- requested-by: board:${opts.user}`,
     `- requested-at: ${new Date().toISOString()}`,
     `- status: pending`,
@@ -1697,6 +1698,7 @@ function AgentComposer({
   state,
   types,
   stale,
+  resumeSession,
   onSubmitted,
 }: {
   token: string
@@ -1704,6 +1706,7 @@ function AgentComposer({
   state: RunnerState | null
   types: RequestType[]
   stale?: boolean
+  resumeSession?: string // 선택 세션의 Claude session_id — 후속 입력을 같은 맥락에서 (resume)
   onSubmitted: (p: PendingReq) => void
 }) {
   const combos = useMemo(() => state?.combos ?? [], [state])
@@ -1766,7 +1769,7 @@ function AgentComposer({
       const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12)
       const id = `REQ-${ts}`
       const label = typeLabelOf(types, typeId)
-      const body = reqFileBody({ id, typeId, label, combo: combo.id, model: modelId, user, prompt: prompt.trim() })
+      const body = reqFileBody({ id, typeId, label, combo: combo.id, model: modelId, user, prompt: prompt.trim(), resume: resumeSession })
       await createFile(token, `requests/${id}.md`, body, `request: ${label} (board:${user})`)
       const pendingReq: PendingReq = {
         id,
@@ -1817,7 +1820,7 @@ function AgentComposer({
               void submit()
             }}
             rows={3}
-            placeholder="새 요청…"
+            placeholder={resumeSession ? "이어서 요청… (같은 세션 맥락)" : "새 요청…"}
             aria-label="프롬프트"
           />
         </div>
@@ -1983,6 +1986,7 @@ function AgentView({
           state={state}
           types={types}
           stale={runnerStale}
+          resumeSession={selected?.run?.combo === 'anthropic-subscription' || selected?.run?.combo === 'anthropic-api_key' ? selected?.run?.session_id : undefined}
           onSubmitted={(p) => {
             onPendingAdd(p)
             setSel(p.id)
