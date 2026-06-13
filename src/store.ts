@@ -3,6 +3,7 @@
    백그라운드 재검증은 GitHub API ETag(If-None-Match) 조건부 요청으로 304 절감. */
 import { useSyncExternalStore } from 'react'
 import { apiHeaders, b64decodeUtf8, fileUrl } from './api'
+import { httpMode, cpReadState } from './backend'
 
 export type StoreKey = 'applications' | 'notifications' | 'inbox' | 'runner-state' | 'outbox' | 'mail-drafts'
 
@@ -74,6 +75,16 @@ export function clearStore(): void {
 
 /* 조건부 재검증: 304 면 캐시 유지(재렌더 없음), 200 이면 자리 교체 */
 export async function revalidate(token: string, key: StoreKey): Promise<void> {
+  if (httpMode) {
+    // control-plane(DbBus)은 ETag/304 없음 — 매번 200, 자리 교체.
+    const r = await cpReadState(token, STORE_PATH[key])
+    if (!r) {
+      setEntry(key, { data: null, sha: null, etag: null, at: Date.now(), missing: true })
+      return
+    }
+    setEntry(key, { data: r.data, sha: null, etag: null, at: Date.now(), missing: false })
+    return
+  }
   const cur = mem.get(key)
   const headers: Record<string, string> = { ...apiHeaders(token) }
   if (cur?.etag) headers['If-None-Match'] = cur.etag

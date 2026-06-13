@@ -1,4 +1,5 @@
 import type { BoardData } from './types'
+import { httpMode, cpReadState, cpWriteState, cpMe } from './backend'
 
 const OWNER = 'mangowhoiscloud'
 const REPO = 'career-data'
@@ -35,6 +36,11 @@ export function apiHeaders(token: string): Record<string, string> {
 const headers = apiHeaders
 
 export async function fetchBoard(token: string): Promise<Fetched> {
+  if (httpMode) {
+    const r = await fetchJsonFile<BoardData>(token, PATH)
+    if (!r) throw new Error('데이터 저장소 접근 불가 — 로그인 또는 데이터 이주를 확인하세요')
+    return { data: r.data, sha: r.sha }
+  }
   const res = await fetch(API, { headers: headers(token) })
   if (res.status === 401) throw new Error('토큰이 유효하지 않습니다 (401)')
   if (res.status === 404) throw new Error('데이터 저장소 접근 불가 (404) — 토큰 권한을 확인하세요')
@@ -72,6 +78,7 @@ export function fileUrl(path: string): string {
 }
 
 export async function fetchJsonFile<T>(token: string, path: string): Promise<{ data: T; sha: string } | null> {
+  if (httpMode) return cpReadState<T>(token, path)
   const res = await fetch(fileUrl(path), { headers: headers(token) })
   if (res.status === 404) return null
   if (res.status === 401) throw new Error('토큰이 유효하지 않습니다 (401)')
@@ -87,6 +94,7 @@ export async function putJsonFile(
   sha: string | null,
   message: string,
 ): Promise<void> {
+  if (httpMode) return cpWriteState(token, path, data)
   const body: Record<string, unknown> = {
     message,
     content: b64encodeUtf8(JSON.stringify(data, null, 2) + '\n'),
@@ -324,6 +332,7 @@ export async function fetchDocBlobUrl(token: string, path: string): Promise<stri
 }
 
 export async function whoami(token: string): Promise<string> {
+  if (httpMode) return cpMe(token)
   const res = await fetch('https://api.github.com/user', { headers: headers(token) })
   if (!res.ok) return 'unknown'
   const json = await res.json()

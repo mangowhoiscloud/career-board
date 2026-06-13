@@ -11,10 +11,9 @@ import {
 } from './api'
 import { clearStore, patchEntry, prefetchAll, revalidate, useEntry, type Entry, type StoreKey } from './store'
 import { mailReadKey, markMailRead, pruneMailRead, useMailReadOverlay } from './mailRead'
+import { httpMode, exchangeCodeFromUrl, loginRedirect, cpLogout, TOKEN_KEY } from './backend'
 import type { Application, BoardData, Status } from './types'
 import { STATUS_COLOR, STATUS_LABEL, STATUS_ORDER } from './types'
-
-const TOKEN_KEY = 'career-board:token'
 const COMBO_KEY = 'agentCombo'
 const MODEL_KEY = 'agentModel'
 type Toast = { kind: 'ok' | 'err'; text: string } | null
@@ -710,6 +709,26 @@ function Drawer({
         )}
       </aside>
     </>
+  )
+}
+
+/* 계정 로그인 게이트(httpMode) — Google OIDC. 세션 쿠키/Bearer는 백엔드가 발급. */
+function GoogleGate({ onLogin, error }: { onLogin: () => void; error: string | null }) {
+  return (
+    <main className="gate">
+      <h1 className="wordmark">
+        mango<span className="wordmark-dot">.</span>career
+      </h1>
+      <p className="gate-sub">계정으로 로그인하세요. 세션은 이 브라우저에만 저장됩니다.</p>
+      <button type="button" className="gate-google" onClick={onLogin}>
+        Google로 로그인
+      </button>
+      {error && (
+        <p className="gate-error" aria-live="polite">
+          {error}
+        </p>
+      )}
+    </main>
   )
 }
 
@@ -2370,7 +2389,14 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (token) void login(token)
+    void (async () => {
+      let tok = token
+      if (httpMode) {
+        const fromCode = await exchangeCodeFromUrl() // OAuth 콜백 복귀 #code → 세션 토큰
+        if (fromCode) tok = fromCode
+      }
+      if (tok) void login(tok)
+    })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -2594,6 +2620,8 @@ export default function App() {
       <main className="gate">
         <p>불러오는 중…</p>
       </main>
+    ) : httpMode ? (
+      <GoogleGate onLogin={loginRedirect} error={gateError} />
     ) : (
       <TokenGate onSubmit={(t) => void login(t)} error={gateError} />
     )
@@ -2651,6 +2679,7 @@ export default function App() {
             type="button"
             className="linkish"
             onClick={() => {
+              if (httpMode && token) void cpLogout(token) // 서버 세션 폐기
               localStorage.removeItem(TOKEN_KEY)
               clearStore()
               setToken(null)
