@@ -101,6 +101,25 @@ export async function putJsonFile(
   if (!res.ok) throw new Error(`커밋 실패 (${res.status})`)
 }
 
+/* 텍스트 파일 갱신 (sha 낙관 잠금) — 취소 요청 등 REQ 파일 상태 전이용 */
+export async function updateTextFile(
+  token: string,
+  path: string,
+  transform: (text: string) => string,
+  message: string,
+): Promise<void> {
+  const res = await fetch(fileUrl(path), { headers: apiHeaders(token) })
+  if (!res.ok) throw new Error(`${path} 로드 실패 (${res.status})`)
+  const json = await res.json()
+  const next = transform(b64decodeUtf8(json.content))
+  const put = await fetch(fileUrl(path), {
+    method: 'PUT',
+    headers: { ...apiHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, content: btoa(String.fromCharCode(...new TextEncoder().encode(next))), sha: json.sha }),
+  })
+  if (!put.ok) throw new Error(`갱신 실패 (${put.status})`)
+}
+
 export async function fetchTextFile(token: string, path: string): Promise<string> {
   const res = await fetch(fileUrl(path), { headers: headers(token) })
   if (res.status === 404) throw new Error('파일 없음 (404)')
@@ -180,7 +199,7 @@ export interface RunEvent {
 }
 export interface RunnerRun {
   id: string
-  status: 'running' | 'done' | 'failed'
+  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
   started: string | null
   ended: string | null
   type: string

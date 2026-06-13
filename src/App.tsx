@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, fetchJsonFile, fetchTextFile,
+  updateTextFile,
   markNotificationsRead, putJsonFile, whoami,
   type InboxData, type InboxMessage, type NotifFile, type Notification, type OutboxData, type OutboxItem,
   type RequestType, type RunEvent, type RunnerRun, type RunnerState, type SdkCredit,
@@ -1453,9 +1454,38 @@ export interface PendingReq {
 
 type AgentSession = { id: string; ms: number; run?: RunnerRun; req?: PendingReq }
 
+/* 외부 취소 표면: REQ 파일을 cancel-requested로 전이 — 러너가 60초 내 집행 중단 */
+function CancelRunAction({ token, runId }: { token: string; runId: string }) {
+  const [state, setState] = useState<'idle' | 'busy' | 'sent' | 'err'>('idle')
+  if (state === 'sent') return <span>중단 요청됨 · 러너 주기 60초</span>
+  if (state === 'err') return <span>중단 요청 실패</span>
+  return (
+    <button
+      type="button"
+      className="text-action"
+      disabled={state === 'busy'}
+      onClick={() => {
+        setState('busy')
+        updateTextFile(
+          token,
+          `requests/${runId.replace('RUN-', 'REQ-')}.md`,
+          (t) => t.replace('status: processing', 'status: cancel-requested').replace('status: pending', 'status: cancel-requested'),
+          `request: 중단 요청 ${runId}`,
+        )
+          .then(() => setState('sent'))
+          .catch(() => setState('err'))
+      }}
+    >
+      중단
+    </button>
+  )
+}
+
 function runStatusText(r: RunnerRun): string {
+  if (r.status === 'queued') return '대기'
   if (r.status === 'running') return '실행 중'
   if (r.status === 'failed') return '실패'
+  if (r.status === 'cancelled') return '중단됨'
   return '완료'
 }
 
@@ -1567,9 +1597,14 @@ function SessionDetail({ token, session, types }: { token: string; session: Agen
         )
       })}
       {req && <p className="plain-note">대기 중 · 러너 주기 60초</p>}
-      {run?.status === 'running' && (
-        <p className="plain-note">실행 중{run.started ? ` · 시작 ${hhmm(run.started)}` : ''}</p>
+      {(run?.status === 'running' || run?.status === 'queued') && (
+        <p className="plain-note">
+          {run.status === 'queued' ? '대기열' : `실행 중${run.started ? ` · 시작 ${hhmm(run.started)}` : ''}`}
+          {' · '}
+          <CancelRunAction token={token} runId={run.id} />
+        </p>
       )}
+      {run?.status === 'cancelled' && <p className="plain-note">중단됨</p>}
       {run?.status === 'failed' && <p className="cc-error">{run.error || '실패 사유 없음'}</p>}
       {run?.status === 'done' && <RunOutput token={token} run={run} />}
     </div>
