@@ -1488,11 +1488,25 @@ button {
   color: var(--text-3);
   font-family: var(--sans);
 }
-.cc-run {
+/* 전송 글리프 — 보더·배경 없는 ↑ (mono, text-3→hover text-2). 입력 있을 때만 렌더 */
+.cc-send {
   flex: none;
   margin-left: auto;
-  line-height: 1.5;
-  font-size: 11.5px;
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-3);
+  transition: color 120ms;
+}
+.cc-send:hover {
+  color: var(--text-2);
+}
+.cc-send:disabled {
+  color: var(--text-3);
+  cursor: default;
 }
 /* SDK 크레딧: mono 평문 한 줄, 80% 이상이면 텍스트 톤만 앰버 */
 .sdk-credit {

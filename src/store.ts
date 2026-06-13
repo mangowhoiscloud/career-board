@@ -4,7 +4,7 @@
 import { useSyncExternalStore } from 'react'
 import { apiHeaders, b64decodeUtf8, fileUrl } from './api'
 
-export type StoreKey = 'applications' | 'notifications' | 'inbox' | 'runner-state' | 'outbox'
+export type StoreKey = 'applications' | 'notifications' | 'inbox' | 'runner-state' | 'outbox' | 'mail-drafts'
 
 export const STORE_PATH: Record<StoreKey, string> = {
   applications: 'data/applications.json',
@@ -12,6 +12,7 @@ export const STORE_PATH: Record<StoreKey, string> = {
   inbox: 'data/mail/inbox.json',
   'runner-state': 'data/runner-state.json',
   outbox: 'data/mail/outbox.json',
+  'mail-drafts': 'data/mail/drafts.json',
 }
 
 export interface Entry<T> {

@@ -179,6 +179,19 @@ export interface OutboxData {
   items: OutboxItem[]
 }
 
+/* ── 메일 답장 초안: 러너가 mail-reply run 산출물을 메일 도메인 파일에 기록 ──
+   account+id 키로 메일당 최신 1건. 보드는 reports/runs 경로 대신 이 파일을 단일 소스로 조회. */
+export interface MailDraft {
+  account: string
+  id: string
+  run_id: string
+  body: string
+  at: string
+}
+export interface MailDraftsData {
+  items: MailDraft[]
+}
+
 /* ── 러너 상태: 인증 콤보·요청 유형·최근 실행 (러너가 갱신) ── */
 
 export interface RunnerModel {

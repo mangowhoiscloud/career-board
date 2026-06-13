@@ -5,7 +5,8 @@ import {
   commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, fetchJsonFile, fetchTextFile,
   updateTextFile, queueMailRead,
   markNotificationsRead, putJsonFile, whoami,
-  type InboxData, type InboxMessage, type NotifFile, type Notification, type OutboxData, type OutboxItem,
+  type InboxData, type InboxMessage, type MailDraft, type MailDraftsData,
+  type NotifFile, type Notification, type OutboxData, type OutboxItem,
   type RequestType, type RunEvent, type RunnerRun, type RunnerState, type SdkCredit,
 } from './api'
 import { clearStore, patchEntry, prefetchAll, revalidate, useEntry, type Entry, type StoreKey } from './store'
@@ -1001,6 +1002,7 @@ function MailModal({
   user,
   state,
   runner,
+  drafts,
   onClose,
   onQueued,
 }: {
@@ -1008,6 +1010,7 @@ function MailModal({
   user: string
   state: MailModalState
   runner: RunnerState | null
+  drafts: MailDraft[] | null
   onClose: () => void
   onQueued: () => void
 }) {
@@ -1015,10 +1018,9 @@ function MailModal({
   const msg = state.kind === 'message' ? state.msg : null
   const [replyOpen, setReplyOpen] = useState(false)
   const [fill, setFill] = useState<{ subject?: string; body: string; ts: number } | undefined>(undefined)
-  const [fillBusy, setFillBusy] = useState(false)
   const [draftBusy, setDraftBusy] = useState(false)
-  const [reqId, setReqId] = useState<string | null>(null)
-  const [appliedRunId, setAppliedRunId] = useState<string | null>(null)
+  const [requested, setRequested] = useState(false)
+  const [applied, setApplied] = useState(false)
   const [note, setNote] = useState<string | null>(null)
   const replyRef = useRef<HTMLDivElement>(null)
 
@@ -1026,49 +1028,48 @@ function MailModal({
     if (replyOpen) replyRef.current?.scrollIntoView({ block: 'nearest' })
   }, [replyOpen])
 
-  /* 모달이 열려 있는 동안 러너 상태 15s 재검증 — 초안 완료를 자리에서 감지 */
+  /* 모달이 열려 있는 동안 drafts·러너 상태 15s 재검증 — 초안 등장·실패를 자리에서 감지 */
   useEffect(() => {
     if (!msg) return
-    const t = window.setInterval(() => void revalidate(token, 'runner-state').catch(() => {}), 15000)
+    const t = window.setInterval(() => {
+      void revalidate(token, 'mail-drafts').catch(() => {})
+      void revalidate(token, 'runner-state').catch(() => {})
+    }, 15000)
     return () => window.clearInterval(t)
   }, [token, msg])
 
+  /* 단일 소스: drafts.json 에서 이 메일(account:id) 항목. 본문이 있으면 채울 준비 완료 */
+  const myDraft = useMemo(
+    () => (msg ? (drafts ?? []).find((d) => d.account === msg.account && d.id === msg.id) : undefined),
+    [drafts, msg],
+  )
+  const hasDraftBody = !!myDraft && myDraft.body.trim().length > 0
+
+  /* 마커 일치 run — 본문 출처가 아니라 진행/실패 신호로만 사용 (drafts 가 본문 단일 소스) */
   const marker = msg ? `[mail-reply:${msg.account}:${msg.id}]` : ''
   const markerRuns = useMemo(
     () => (marker ? (runner?.recent_runs ?? []).filter((r) => r.prompt.includes(marker)) : []),
     [runner, marker],
   )
-  const doneDraft = markerRuns.find((r) => r.status === 'done')
-  const activeDraft = markerRuns.find((r) => r.status === 'running')
-  /* 이 모달에서 보낸 요청의 run — 러너의 run id 규칙(REQ→RUN 치환)으로 매칭 */
-  const myRun = reqId ? (runner?.recent_runs ?? []).find((r) => r.id === runIdOf(reqId)) : undefined
-  const myFailed = myRun?.status === 'failed' ? myRun : undefined
-  const applied = appliedRunId !== null
-  const waiting = !applied && !myFailed && (reqId !== null || !!activeDraft)
+  const activeRun = markerRuns.find((r) => r.status === 'running')
+  /* 실패 = run failed 이고 아직 drafts 에 본문이 없을 때만 (실패 후 다른 시도가 성공했을 수 있음) */
+  const failedRun = markerRuns.find((r) => r.status === 'failed')
+  const failed = !hasDraftBody && !!failedRun ? failedRun : undefined
+  /* 대기 = 요청했거나 run 진행 중, 아직 본문 없음, 실패 아님 — "drafts 에 아직 없음" = waiting */
+  const waiting = !applied && !failed && hasDraftBody === false && (requested || !!activeRun)
 
-  const applyDraft = useCallback(
-    async (run: RunnerRun) => {
-      if (!run.output) throw new Error('산출물 경로 없음')
-      const text = await fetchTextFile(token, run.output)
-      const parsed = parseDraft(text)
-      setReplyOpen(true)
-      setFill({ ...parsed, ts: Date.now() })
-    },
-    [token],
-  )
+  const fillFromDraft = useCallback((d: MailDraft) => {
+    const parsed = parseDraft(d.body)
+    setReplyOpen(true)
+    setFill({ ...parsed, ts: Date.now() })
+    setApplied(true)
+  }, [])
 
-  /* 마커 일치 done run 도착 → 산출물 fetch → 제목·본문 자동 채움.
-     실패해도 appliedRunId는 유지 — waiting 해제(스피너 멈춤) + note 노출. setAppliedRunId(null)로
-     되돌리면 deps(myRun) 재실행으로 404를 무한 재fetch하며 스피너가 안 멈춘다(2026-06-13 버그). */
+  /* drafts 에 본문 등장 → 제목·본문 자동 채움. 경로 fetch 없음 = 404 무한스피너 원천 차단. */
   useEffect(() => {
-    if (!reqId || applied) return
-    const done = myRun?.status === 'done' ? myRun : undefined
-    if (!done) return
-    setAppliedRunId(done.id)
-    applyDraft(done).catch((e) => {
-      setNote(e instanceof Error ? `초안 로드 실패: ${e.message} · 산출물 확인 후 '초안 채우기' 재시도` : '초안 로드 실패')
-    })
-  }, [reqId, applied, myRun, applyDraft])
+    if (applied || !requested || !myDraft || !hasDraftBody) return
+    fillFromDraft(myDraft)
+  }, [applied, requested, myDraft, hasDraftBody, fillFromDraft])
 
   const requestDraft = async () => {
     if (!msg) return
@@ -1090,8 +1091,8 @@ function MailModal({
       ].join('\n')
       const body = reqFileBody({ id, typeId: 'mail-reply', label: '메일 답장 초안', combo, model, user, prompt })
       await createFile(token, `requests/${id}.md`, body, `request: 메일 답장 초안 (board:${user})`)
-      setReqId(id)
-      setAppliedRunId(null)
+      setRequested(true)
+      setApplied(false)
       setReplyOpen(true)
     } catch (e) {
       setNote(e instanceof Error ? e.message : '요청 실패')
@@ -1100,18 +1101,11 @@ function MailModal({
     }
   }
 
-  /* 수동 '초안 채우기': 완료된 초안을 동일 파서로 제목+본문에 적용 */
-  const fillDraft = async () => {
-    if (!doneDraft) return
-    setFillBusy(true)
+  /* 수동 '초안 채우기': drafts 의 해당 항목을 동일 파서로 제목+본문에 적용 (경로 fetch 없음) */
+  const fillDraft = () => {
+    if (!myDraft || !hasDraftBody) return
     setNote(null)
-    try {
-      await applyDraft(doneDraft)
-    } catch (e) {
-      setNote(e instanceof Error ? e.message : '초안 로드 실패')
-    } finally {
-      setFillBusy(false)
-    }
+    fillFromDraft(myDraft)
   }
 
   return (
@@ -1201,12 +1195,12 @@ function MailModal({
                 {draftBusy ? '요청 중…' : '에이전트 초안'}
               </button>
             )}
-            {doneDraft && !applied && (
-              <button type="button" className="text-action" disabled={fillBusy} onClick={() => void fillDraft()}>
-                {fillBusy ? '불러오는 중…' : '초안 채우기'}
+            {hasDraftBody && !applied && (
+              <button type="button" className="text-action" onClick={() => fillDraft()}>
+                초안 채우기
               </button>
             )}
-            {myFailed && <span className="mm-note err">초안 실패: {myFailed.error || 'exit 1'}</span>}
+            {failed && <span className="mm-note err">초안 실패: {failed.error || 'exit 1'}</span>}
             {note && <span className="mm-note err">{note}</span>}
           </footer>
         )}
@@ -1248,6 +1242,7 @@ function MailView({
   user,
   inboxEntry,
   outboxEntry,
+  draftsEntry,
   runner,
   focus,
   onFocusDone,
@@ -1257,6 +1252,7 @@ function MailView({
   user: string
   inboxEntry?: Entry<InboxData>
   outboxEntry?: Entry<OutboxData>
+  draftsEntry?: Entry<MailDraftsData>
   runner: RunnerState | null
   focus?: { subject: string; ts: number }
   onFocusDone: () => void
@@ -1537,6 +1533,7 @@ function MailView({
           user={user}
           state={modal}
           runner={runner}
+          drafts={draftsEntry?.data?.items ?? null}
           onClose={closeModal}
           onQueued={onQueued}
         />
@@ -2027,7 +2024,8 @@ function AgentComposer({
             aria-label="프롬프트"
           />
         </div>
-        {/* 하단 칩 행: 유형·경로·모델 텍스트 칩(Cursor 컴포저 문법) 좌측, 실행 우측.
+        {/* 하단 칩 행: 유형·경로·모델 텍스트 칩(Cursor 컴포저 문법) 좌측, 전송 글리프 우측.
+            제출은 Enter — 별도 '실행' 텍스트 라벨 없음. 입력이 있을 때만 ↑ 글리프 노출.
             thread 이어가기 시엔 직전 turn 의 설정으로 고정 — 칩 비활성. */}
         <div className="cc-chips">
           <ConfigChip
@@ -2059,9 +2057,17 @@ function AgentComposer({
             options={(combo?.models ?? []).map((m) => ({ id: m.id, label: m.label }))}
             onPick={setModelId}
           />
-          <button type="submit" className="text-action cc-run" disabled={busy || !prompt.trim() || !combo}>
-            {busy ? '등록 중…' : '실행'}
-          </button>
+          {prompt.trim() && (
+            <button
+              type="submit"
+              className="cc-send"
+              disabled={busy || !combo}
+              aria-label="전송 (Enter)"
+              title="전송 (Enter)"
+            >
+              ↑
+            </button>
+          )}
         </div>
       </div>
     </form>
@@ -2270,6 +2276,7 @@ export default function App() {
   const notifEntry = useEntry<NotifFile>('notifications')
   const inboxEntry = useEntry<InboxData>('inbox')
   const outboxEntry = useEntry<OutboxData>('outbox')
+  const draftsEntry = useEntry<MailDraftsData>('mail-drafts')
   const runnerEntry = useEntry<RunnerState>('runner-state')
 
   const board = boardEntry?.data ?? null
@@ -2327,7 +2334,7 @@ export default function App() {
     if (!token || !hasBoard) return
     const VIEW_KEYS: Record<View, StoreKey[]> = {
       board: ['applications', 'notifications'],
-      mail: ['inbox', 'outbox', 'notifications', 'runner-state'],
+      mail: ['inbox', 'outbox', 'mail-drafts', 'notifications', 'runner-state'],
       agent: ['runner-state', 'notifications'],
       notif: ['notifications'],
     }
@@ -2617,6 +2624,7 @@ export default function App() {
           user={user}
           inboxEntry={inboxEntry}
           outboxEntry={outboxEntry}
+          draftsEntry={draftsEntry}
           runner={runnerEntry?.data ?? null}
           focus={mailFocus}
           onFocusDone={() => setMailFocus(undefined)}
