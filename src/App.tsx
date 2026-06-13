@@ -1057,15 +1057,16 @@ function MailModal({
     [token],
   )
 
-  /* 마커 일치 done run 도착 → 산출물 fetch → 제목·본문 자동 채움 */
+  /* 마커 일치 done run 도착 → 산출물 fetch → 제목·본문 자동 채움.
+     실패해도 appliedRunId는 유지 — waiting 해제(스피너 멈춤) + note 노출. setAppliedRunId(null)로
+     되돌리면 deps(myRun) 재실행으로 404를 무한 재fetch하며 스피너가 안 멈춘다(2026-06-13 버그). */
   useEffect(() => {
     if (!reqId || applied) return
     const done = myRun?.status === 'done' ? myRun : undefined
     if (!done) return
     setAppliedRunId(done.id)
     applyDraft(done).catch((e) => {
-      setAppliedRunId(null)
-      setNote(e instanceof Error ? e.message : '초안 로드 실패')
+      setNote(e instanceof Error ? `초안 로드 실패: ${e.message} · 산출물 확인 후 '초안 채우기' 재시도` : '초안 로드 실패')
     })
   }, [reqId, applied, myRun, applyDraft])
 
