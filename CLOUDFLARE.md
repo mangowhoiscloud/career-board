@@ -17,7 +17,9 @@
    - `VITE_API_BASE` = `https://career-control-plane.fly.dev`
    - `VITE_BASE` = `/`  ← 루트 도메인이므로 (GitHub Pages의 `/career/`가 아님)
 4. Save & Deploy → `mango-career.pages.dev`(또는 프로젝트명).
-5. SPA 라우팅: `public/_redirects`(`/* /index.html 200`)가 빌드에 포함돼 새로고침/딥링크 처리.
+5. SPA 라우팅: `wrangler.jsonc`의 `assets.not_found_handling: single-page-application`이 네이티브
+   처리(새로고침/딥링크 → index.html). `_redirects`는 쓰지 않는다(Workers Assets에서 `/* /index.html
+   200`은 무한루프로 거부됨 — code 100324).
 
 ## 배포 후 — control-plane 쪽 2가지
 1. **CORS 허용 오리진 추가**: 새 pages.dev 오리진을 `ALLOWED_ORIGINS`에 추가.

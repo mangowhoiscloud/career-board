@@ -1,0 +1,10 @@
+{
+  // Cloudflare Workers Assets (정적 SPA) — `npx wrangler deploy`가 dist/ 를 업로드.
+  // SPA 라우팅은 not_found_handling 으로 네이티브 처리(_redirects 불필요 — 무한루프 충돌 회피).
+  "name": "career",
+  "compatibility_date": "2026-06-13",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}
