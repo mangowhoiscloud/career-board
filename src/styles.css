@@ -107,6 +107,24 @@ button {
   font-size: 12.5px;
   margin: 0 0 18px;
 }
+.gate-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+}
+.gate-loading .gate-sub {
+  margin: 0;
+}
+.gate-spinner {
+  width: 20px;
+  height: 20px;
+  box-sizing: border-box;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--amber);
+  border-radius: 50%;
+  animation: sync-rotate 0.8s linear infinite;
+}
 .gate form {
   display: flex;
   gap: 8px;

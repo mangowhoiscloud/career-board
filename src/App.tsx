@@ -18,6 +18,17 @@ const COMBO_KEY = 'agentCombo'
 const MODEL_KEY = 'agentModel'
 type Toast = { kind: 'ok' | 'err'; text: string } | null
 type View = 'board' | 'mail' | 'agent' | 'notif'
+const VIEWS: View[] = ['board', 'mail', 'agent', 'notif']
+/* 뷰별 URL 경로 — Cloudflare(BASE '/')는 /board·/mail·/agent·/notif, Pages(BASE '/career/')는
+   /career/board… SPA fallback(Cloudflare not_found=single-page-application)으로 딥링크 로드 가능. */
+const ROUTE_BASE = (import.meta.env.BASE_URL || '/').replace(/\/$/, '')
+function viewFromPath(): View {
+  const seg = window.location.pathname.slice(ROUTE_BASE.length).replace(/^\/+|\/+$/g, '').split('/')[0]
+  return (VIEWS as string[]).includes(seg) ? (seg as View) : 'board'
+}
+function pathForView(v: View): string {
+  return `${ROUTE_BASE}/${v}`
+}
 
 /* 트랜스크립트·결과 마크다운 — CC 터미널처럼 절제된 렌더, 외부 링크만 앰버 */
 function Md({ text }: { text: string }) {
@@ -101,6 +112,7 @@ function dateLabel(iso: string): string {
 
 /* 메일 텍스트 정돈: 제로폭 문자 제거 · 줄별 trim · 3+ 연속 빈 줄 → 1 · 앞뒤 공백 제거 */
 function cleanMailText(s: string): string {
+  if (!s) return ''  // \uD14C\uC774\uBE14 \uD53C\uB4DC \uBAA9\uB85D \uB808\uCF54\uB4DC\uB294 \uBCF8\uBB38 \uC5C6\uC74C(\uC5F4 \uB54C mailGet\uC73C\uB85C \uCC44\uC6C0) \u2192 undefined \uD06C\uB798\uC2DC \uBC29\uC9C0
   return s
     .replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, '')
     .replace(/\r\n?/g, '\n')
@@ -113,6 +125,7 @@ function cleanMailText(s: string): string {
 
 /* 목록 스니펫용 한 줄 정돈: 제로폭·연속 공백 제거 */
 function cleanMailLine(s: string): string {
+  if (!s) return ''
   return s.replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, '').replace(/\s+/g, ' ').trim()
 }
 
@@ -746,6 +759,21 @@ function Drawer({
   )
 }
 
+/* 부팅·로딩 스피너 — OAuth 복귀/데이터 prefetch 동안 표시. 로그인 화면이 잠깐 뜨는 깜빡임을 덮는다. */
+function LoadingScreen() {
+  return (
+    <main className="gate">
+      <h1 className="wordmark">
+        mango<span className="wordmark-dot">.</span>career
+      </h1>
+      <div className="gate-loading" aria-live="polite">
+        <span className="gate-spinner" aria-hidden="true" />
+        <span className="gate-sub">불러오는 중…</span>
+      </div>
+    </main>
+  )
+}
+
 /* 계정 로그인 게이트(httpMode) — Google OIDC. 세션 쿠키/Bearer는 백엔드가 발급. */
 function GoogleGate({ onLogin, error }: { onLogin: () => void; error: string | null }) {
   return (
@@ -1206,7 +1234,9 @@ function MailModal({
                 /* text/plain 없던 메일: 새니타이즈드 HTML 원문을 격리 프레임으로 (sandbox="" — 스크립트·폼 차단) */
                 <iframe className="mail-frame" sandbox="" srcDoc={mailSrcDoc(msg.html)} title="메일 본문" />
               ) : (
-                <div className="mm-body">{cleanMailText(msg.body) || '(본문 없음)'}</div>
+                <div className="mm-body">
+                  {cleanMailText(msg.body) || (httpMode ? '불러오는 중…' : '(본문 없음)')}
+                </div>
               )}
               {replyOpen && (
                 <div className="mm-reply" ref={replyRef}>
@@ -2370,6 +2400,11 @@ function AgentView({
 
 export default function App() {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY))
+  /* 부팅 스피너: 저장 토큰 또는 OAuth 콜백(#code) 복귀면 인증 시도 중 → 로그인 화면 깜빡임 방지 */
+  const [booting, setBooting] = useState<boolean>(() => {
+    const hasCode = httpMode && /[#&]code=/.test(window.location.hash)
+    return !!(localStorage.getItem(TOKEN_KEY) || hasCode)
+  })
   const [user, setUser] = useState('')
   const [gateError, setGateError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -2380,7 +2415,13 @@ export default function App() {
   const [menuUp, setMenuUp] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
 
-  const [view, setView] = useState<View>('board')
+  const [view, setViewState] = useState<View>(() => viewFromPath())
+  const setView = useCallback((v: View) => {
+    setViewState(v)
+    if (window.location.pathname !== pathForView(v)) {
+      window.history.pushState({ view: v }, '', pathForView(v))
+    }
+  }, [])
   const [mailFocus, setMailFocus] = useState<{ subject: string; ts: number } | undefined>(undefined)
   const [agentFocus, setAgentFocus] = useState<{ runId: string; ts: number } | undefined>(undefined)
   const [pendingReqs, setPendingReqs] = useState<PendingReq[]>([])
@@ -2445,14 +2486,25 @@ export default function App() {
 
   useEffect(() => {
     void (async () => {
-      let tok = token
-      if (httpMode) {
-        const fromCode = await exchangeCodeFromUrl() // OAuth 콜백 복귀 #code → 세션 토큰
-        if (fromCode) tok = fromCode
+      try {
+        let tok = token
+        if (httpMode) {
+          const fromCode = await exchangeCodeFromUrl() // OAuth 콜백 복귀 #code → 세션 토큰
+          if (fromCode) tok = fromCode
+        }
+        if (tok) await login(tok) // 완료까지 booting 유지 → 로그인 화면 깜빡임 없음
+      } finally {
+        setBooting(false)
       }
-      if (tok) void login(tok)
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  /* 브라우저 뒤로/앞으로 → 경로에서 뷰 복원 (URL ↔ view 동기) */
+  useEffect(() => {
+    const onPop = () => setViewState(viewFromPath())
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
   }, [])
 
   /* 백그라운드 재검증: 활성 뷰 관련 파일만 60s, ETag 조건부 (304 면 자리 유지) */
@@ -2671,22 +2723,17 @@ export default function App() {
   }
 
   if (!token) {
-    return loading ? (
-      <main className="gate">
-        <p>불러오는 중…</p>
-      </main>
-    ) : httpMode ? (
+    // 미인증: 부팅(토큰 복원·OAuth #code 교환) 또는 로그인 진행 중이면 스피너 — 로그인 화면 깜빡임 방지.
+    // 그 외(신규 방문)에만 로그인 화면을 즉시 보인다.
+    if (booting || loading) return <LoadingScreen />
+    return httpMode ? (
       <GoogleGate onLogin={loginRedirect} error={gateError} />
     ) : (
       <TokenGate onSubmit={(t) => void login(t)} error={gateError} />
     )
   }
   if (!board) {
-    return (
-      <main className="gate">
-        <p>불러오는 중…</p>
-      </main>
-    )
+    return <LoadingScreen />  // 토큰은 있고 데이터 prefetch 중 (캐시 있으면 이 분기 안 옴)
   }
 
   const unreadCount = notifItems.filter((n) => !n.handled).length
