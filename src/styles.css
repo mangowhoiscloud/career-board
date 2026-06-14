@@ -1913,3 +1913,8 @@ button {
 .sh-status.st-running { color: var(--amber); }
 .sh-status.st-failed { color: var(--danger); }
 .sh-status.st-done { color: var(--text-3); }
+
+/* 런 산출물 링크 (A1) */
+.turn-artifacts { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px 16px; }
+.art-link { background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--text-2); font-size: 11px; padding: 3px 9px; }
+.art-link:hover { border-color: var(--amber); color: var(--amber); }

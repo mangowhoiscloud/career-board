@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
-  commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, fetchJsonFile, fetchTextFile,
+  commitBoard, createFile, DATA_REPO_URL, fetchBoard, fetchDocBlobUrl, fetchArtifactBlobUrl, fetchJsonFile, fetchTextFile,
   updateTextFile, queueMailRead, mailFeed, mailGet, mailMarkRead,
   markNotificationsRead, putJsonFile, whoami,
   type InboxData, type InboxMessage, type MailDraft, type MailDraftsData,
@@ -1892,6 +1892,21 @@ const SESSION_STATUS_LABEL: Record<string, string> = {
 function SessionDetail({ token, session, types }: { token: string; session: AgentSession; types: RequestType[] }) {
   // S5: 세션 단위 인지 — 턴 카운터 + 현재 상태. 실제 에이전트 사용 경험의 진행을 보인다.
   const st = session.latestStatus
+  // A1: 런 산출물(클라우드 PDF 등) — data/artifacts.json 인덱스 → run별 파일, 클릭 시 /api/artifact(테넌트)에서 열기
+  const [arts, setArts] = useState<Record<string, string[]>>({})
+  useEffect(() => {
+    void fetchJsonFile<{ items: Array<{ run: string; files: string[] }> }>(token, 'data/artifacts.json')
+      .then((r) => {
+        const m: Record<string, string[]> = {}
+        for (const it of r?.data?.items ?? []) m[it.run] = it.files
+        setArts(m)
+      }).catch(() => {})
+  }, [token])
+  const openArt = async (path: string) => {
+    try {
+      window.open(await fetchArtifactBlobUrl(token, path), '_blank', 'noopener')
+    } catch { /* 산출물 로드 실패 무시 */ }
+  }
   return (
     <div className="agent-detail">
       <div className="session-head mono">
@@ -1899,7 +1914,18 @@ function SessionDetail({ token, session, types }: { token: string; session: Agen
         {st && <span className={`sh-status st-${st}`}>· {SESSION_STATUS_LABEL[st] ?? st}</span>}
       </div>
       {session.turns.map((t, i) => (
-        <TurnDetail key={t.id} token={token} turn={t} types={types} showHead={i === 0} />
+        <div key={t.id}>
+          <TurnDetail token={token} turn={t} types={types} showHead={i === 0} />
+          {t.run && (arts[t.run.id]?.length ?? 0) > 0 && (
+            <div className="turn-artifacts mono">
+              {arts[t.run.id].map((p) => (
+                <button key={p} type="button" className="art-link" onClick={() => void openArt(p)}>
+                  📄 {p.split('/').pop()}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       ))}
     </div>
   )
