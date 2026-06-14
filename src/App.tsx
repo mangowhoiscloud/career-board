@@ -1885,9 +1885,19 @@ function TurnDetail({ token, turn, types, showHead }: { token: string; turn: Age
 }
 
 /* 세션 누적 트랜스크립트 — 한 thread 의 모든 turn 을 시간순 렌더 (멀티턴 핑퐁) */
+const SESSION_STATUS_LABEL: Record<string, string> = {
+  queued: '대기', running: '실행 중', done: '완료', failed: '실패', cancelled: '중단',
+}
+
 function SessionDetail({ token, session, types }: { token: string; session: AgentSession; types: RequestType[] }) {
+  // S5: 세션 단위 인지 — 턴 카운터 + 현재 상태. 실제 에이전트 사용 경험의 진행을 보인다.
+  const st = session.latestStatus
   return (
     <div className="agent-detail">
+      <div className="session-head mono">
+        <span className="sh-turns">턴 {session.turns.length}</span>
+        {st && <span className={`sh-status st-${st}`}>· {SESSION_STATUS_LABEL[st] ?? st}</span>}
+      </div>
       {session.turns.map((t, i) => (
         <TurnDetail key={t.id} token={token} turn={t} types={types} showHead={i === 0} />
       ))}
