@@ -129,6 +129,13 @@ export async function updateTextFile(
 }
 
 export async function fetchTextFile(token: string, path: string): Promise<string> {
+  if (httpMode) {
+    // 문서 프록시(#19): 세션 토큰엔 GitHub 권한 없음 → control-plane이 서버 토큰으로 대신 읽어 원문 반환
+    const res = await fetch(`${API_BASE}/api/doc/${encodeURI(path)}`, { headers: { Authorization: `Bearer ${token}` } })
+    if (res.status === 404) throw new Error('파일 없음 (404)')
+    if (!res.ok) throw new Error(`${path} 로드 실패 (${res.status})`)
+    return res.text()
+  }
   const res = await fetch(fileUrl(path), { headers: headers(token) })
   if (res.status === 404) throw new Error('파일 없음 (404)')
   if (!res.ok) throw new Error(`${path} 로드 실패 (${res.status})`)
@@ -366,6 +373,12 @@ export async function markNotificationsRead(
 }
 
 export async function fetchDocBlobUrl(token: string, path: string): Promise<string> {
+  if (httpMode) {
+    // 문서 프록시(#19): control-plane이 원문 바이트+content-type 반환 → 블롭 URL
+    const res = await fetch(`${API_BASE}/api/doc/${encodeURI(path)}`, { headers: { Authorization: `Bearer ${token}` } })
+    if (!res.ok) throw new Error(`문서 로드 실패 (${res.status})`)
+    return URL.createObjectURL(await res.blob())
+  }
   const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${encodeURI(path)}`, {
     headers: headers(token),
   })
