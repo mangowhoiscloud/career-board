@@ -1885,3 +1885,24 @@ button {
     gap: 20px;
   }
 }
+
+/* 설정(기어) 모달 — 에이전트 백엔드 선택 */
+.gear-btn { background: none; border: none; color: var(--text-2); cursor: pointer; font-size: 13px; padding: 0 2px; line-height: 1; }
+.gear-btn:hover { color: var(--amber); }
+.settings-modal {
+  position: fixed; z-index: 50; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: min(420px, 94vw); max-height: 86vh; overflow-y: auto;
+  display: flex; flex-direction: column;
+  background: var(--bg-panel); border: 1px solid var(--border-strong); border-radius: 6px;
+}
+.settings-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+.set-toggle { display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
+.set-field { display: flex; flex-direction: column; gap: 6px; }
+.set-label { font-size: 11px; color: var(--text-2); }
+.set-opts { display: flex; gap: 8px; flex-wrap: wrap; }
+.set-opts button { background: none; border: 1px solid var(--border); color: var(--text-2); border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+.set-opts button.on { border-color: var(--amber); color: var(--amber); }
+.set-select { background: var(--bg); border: 1px solid var(--border); color: inherit; border-radius: 4px; padding: 5px 8px; font-size: 12px; }
+.set-status { font-size: 11px; color: var(--text-2); margin: 0; }
+.settings-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--border); }
+.set-note { font-size: 11px; color: var(--text-2); }

@@ -7,7 +7,7 @@ import {
   markNotificationsRead, putJsonFile, whoami,
   type InboxData, type InboxMessage, type MailDraft, type MailDraftsData,
   type NotifFile, type Notification, type OutboxData, type OutboxItem,
-  type RequestType, type RunEvent, type RunnerRun, type RunnerState, type SdkCredit,
+  type RequestType, type RunEvent, type RunnerRun, type RunnerState, type RunnerCombo, type SdkCredit,
 } from './api'
 import { clearStore, patchEntry, prefetchAll, revalidate, useEntry, type Entry, type StoreKey } from './store'
 import { mailReadKey, markMailRead, pruneMailRead, useMailReadOverlay } from './mailRead'
@@ -2396,6 +2396,119 @@ function AgentView({
   )
 }
 
+/* 설정(기어) — 에이전트·메일분류 백엔드 선택. 외부 SaaS 패턴(JetBrains/Kilo: 기어→프로바이더/모델).
+   토글 + 프로바이더 + 인증{구독|API} + 모델 → data/agent-config.json. 구독은 OpenAI만(디렉티브).
+   런너는 cp_get으로 이 설정을 읽는다(#21 브리지). combos는 runner-state에서. */
+type AgentConfig = { enabled: boolean; combo: string; model: string }
+
+function SettingsModal({ token, combos, onClose }: {
+  token: string
+  combos: RunnerCombo[]
+  onClose: () => void
+}) {
+  const [enabled, setEnabled] = useState(true)
+  const [provider, setProvider] = useState('openai')
+  const [auth, setAuth] = useState('subscription')
+  const [model, setModel] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+
+  // 구독은 OpenAI만(디렉티브) — anthropic-subscription 숨김
+  const shown = useMemo(
+    () => combos.filter((c) => !(c.provider === 'anthropic' && c.auth === 'subscription')),
+    [combos],
+  )
+  const providers = useMemo(() => [...new Set(shown.map((c) => c.provider))], [shown])
+  const authsFor = (p: string) => [...new Set(shown.filter((c) => c.provider === p).map((c) => c.auth))]
+  const comboFor = (p: string, a: string) => shown.find((c) => c.provider === p && c.auth === a)
+  const current = comboFor(provider, auth)
+
+  useEffect(() => {
+    void fetchJsonFile<AgentConfig>(token, 'data/agent-config.json').then((r) => {
+      const c = r?.data
+      if (c?.combo) {
+        const i = c.combo.indexOf('-')
+        if (i > 0) { setProvider(c.combo.slice(0, i)); setAuth(c.combo.slice(i + 1)) }
+        setEnabled(c.enabled !== false)
+        if (c.model) setModel(c.model)
+      }
+    }).catch(() => {})
+  }, [token])
+
+  useEffect(() => {
+    const c = comboFor(provider, auth)
+    if (c && !c.models.some((m) => m.id === model)) {
+      setModel(c.models.find((m) => m.default)?.id ?? c.models[0]?.id ?? '')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider, auth, combos])
+
+  const save = async () => {
+    const c = comboFor(provider, auth)
+    if (!c) { setNote('사용할 수 없는 조합'); return }
+    setBusy(true); setNote(null)
+    try {
+      const cur = await fetchJsonFile<AgentConfig>(token, 'data/agent-config.json').catch(() => null)
+      await putJsonFile(token, 'data/agent-config.json',
+        { enabled, combo: `${provider}-${auth}`, model }, cur?.sha ?? null, 'settings: agent config')
+      setNote('저장됨'); window.setTimeout(onClose, 600)
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : '저장 실패')
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <>
+      <div className="drawer-backdrop" onClick={onClose} aria-hidden="true" />
+      <div className="settings-modal" role="dialog" aria-modal="true" aria-label="설정">
+        <header className="mm-head">
+          <span className="mm-subject">설정 · 에이전트</span>
+          <button type="button" className="mm-close" onClick={onClose} aria-label="닫기">✕</button>
+        </header>
+        <div className="settings-body">
+          <label className="set-toggle">
+            <span>메일 분류 · 에이전트 켜기</span>
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+          </label>
+          <div className="set-field">
+            <span className="set-label mono">프로바이더</span>
+            <div className="set-opts mono">
+              {providers.map((p) => (
+                <button key={p} type="button" className={provider === p ? 'on' : ''} onClick={() => setProvider(p)}>{p}</button>
+              ))}
+            </div>
+          </div>
+          <div className="set-field">
+            <span className="set-label mono">인증</span>
+            <div className="set-opts mono">
+              {authsFor(provider).map((a) => (
+                <button key={a} type="button" className={auth === a ? 'on' : ''} onClick={() => setAuth(a)}>
+                  {a === 'subscription' ? '구독' : 'API'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="set-field">
+            <span className="set-label mono">모델</span>
+            <select className="set-select mono" value={model} onChange={(e) => setModel(e.target.value)}>
+              {(current?.models ?? []).map((m) => (<option key={m.id} value={m.id}>{m.label}</option>))}
+            </select>
+          </div>
+          <p className="set-status mono">
+            {current ? (current.ready ? '✓ 준비됨' : `· ${current.reason ?? '자격증명 미등록'}`) : '· 사용 불가 조합'}
+          </p>
+        </div>
+        <footer className="settings-foot">
+          {note && <span className="set-note mono">{note}</span>}
+          <button type="button" className="text-action" disabled={busy || !current} onClick={() => void save()}>
+            {busy ? '저장 중…' : '저장'}
+          </button>
+        </footer>
+      </div>
+    </>
+  )
+}
+
 /* ════════════════════════════════════════════════════════════════ */
 
 export default function App() {
@@ -2439,6 +2552,7 @@ export default function App() {
   const outboxEntry = useEntry<OutboxData>('outbox')
   const draftsEntry = useEntry<MailDraftsData>('mail-drafts')
   const runnerEntry = useEntry<RunnerState>('runner-state')
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const board = boardEntry?.data ?? null
   const sha = boardEntry?.sha ?? ''
@@ -2777,6 +2891,8 @@ export default function App() {
           <span className="sep">·</span>
           <span>updated {board.updated}</span>
           <span className="sep">·</span>
+          <button type="button" className="gear-btn" onClick={() => setSettingsOpen(true)} aria-label="설정" title="설정">⚙</button>
+          <span className="sep">·</span>
           <button
             type="button"
             className="linkish"
@@ -3017,6 +3133,10 @@ export default function App() {
         <button type="button" className={`toast ${toast.kind}`} role="status" aria-live="polite" onClick={() => setToast(null)}>
           {toast.text}
         </button>
+      )}
+
+      {settingsOpen && (
+        <SettingsModal token={token} combos={runnerEntry?.data?.combos ?? []} onClose={() => setSettingsOpen(false)} />
       )}
     </main>
   )
