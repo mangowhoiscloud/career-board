@@ -2600,7 +2600,9 @@ export default function App() {
   const runnerEntry = useEntry<RunnerState>('runner-state')
   const [settingsOpen, setSettingsOpen] = useState(false)
 
-  const board = boardEntry?.data ?? null
+  // httpMode 신규/빈 테넌트: applications 없음(boardEntry 로드됐으나 missing) → 무한 스피너 대신 빈 보드(온보딩)
+  const board = boardEntry?.data
+    ?? (httpMode && boardEntry !== undefined ? { schema: 1, updated: '', applications: [] } as BoardData : null)
   const sha = boardEntry?.sha ?? ''
   const notifItems = useMemo(() => notifEntry?.data?.items ?? [], [notifEntry])
 

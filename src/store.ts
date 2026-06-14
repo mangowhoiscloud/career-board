@@ -106,13 +106,15 @@ export async function revalidate(token: string, key: StoreKey): Promise<void> {
   })
 }
 
-/* 인증 직후 5개 파일 병렬 prefetch. applications 실패는 인증 실패로 승격 */
+/* 인증 직후 5개 파일 병렬 prefetch. applications revalidate가 reject(401 등)면 인증 실패로 승격.
+   httpMode에서 applications 404(missing)는 **신규/빈 테넌트**(데이터 없음) — 에러가 아니라 온보딩 상태.
+   GitHub-PAT 모드에서만 404=토큰/repo 권한 문제로 승격. */
 export async function prefetchAll(token: string): Promise<void> {
   const keys = Object.keys(STORE_PATH) as StoreKey[]
   const results = await Promise.allSettled(keys.map((k) => revalidate(token, k)))
   const appResult = results[keys.indexOf('applications')]
   if (appResult.status === 'rejected') throw appResult.reason
-  if (mem.get('applications')?.missing) {
+  if (!httpMode && mem.get('applications')?.missing) {
     throw new Error('데이터 저장소 접근 불가 (404) — 토큰 권한을 확인하세요')
   }
 }
