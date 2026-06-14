@@ -394,6 +394,15 @@ export async function fetchDocBlobUrl(token: string, path: string): Promise<stri
   return URL.createObjectURL(new Blob([bytes], { type: mime }))
 }
 
+/* 클라우드 산출물(생성 PDF 등 git 밖) — control-plane DB(테넌트 스코프)에서 조회. httpMode 전용. */
+export async function fetchArtifactBlobUrl(token: string, path: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/artifact/${encodeURI(path)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(`산출물 로드 실패 (${res.status})`)
+  return URL.createObjectURL(await res.blob())
+}
+
 export async function whoami(token: string): Promise<string> {
   if (httpMode) return cpMe(token)
   const res = await fetch('https://api.github.com/user', { headers: headers(token) })
