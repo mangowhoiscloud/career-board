@@ -65,6 +65,13 @@ export function loginRedirect(): void {
   window.location.href = `${API_BASE}/auth/google/start`
 }
 
+/* GitHub App 설치 시작 — 서버가 설치 URL(JSON) 반환, 보드가 navigate. 교차 오리진이라 Bearer로 받음. */
+export async function cpGithubStart(token: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/auth/github/start`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(`GitHub 연결 시작 실패 (${res.status})`)
+  return (await res.json()).url as string
+}
+
 export async function cpLogout(token: string): Promise<void> {
   try {
     await fetch(`${API_BASE}/auth/logout`, { method: 'POST', headers: authHeaders(token) })

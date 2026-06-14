@@ -11,7 +11,7 @@ import {
 } from './api'
 import { clearStore, patchEntry, prefetchAll, revalidate, useEntry, type Entry, type StoreKey } from './store'
 import { mailReadKey, markMailRead, pruneMailRead, useMailReadOverlay } from './mailRead'
-import { httpMode, exchangeCodeFromUrl, loginRedirect, cpLogout, TOKEN_KEY } from './backend'
+import { httpMode, exchangeCodeFromUrl, loginRedirect, cpLogout, cpGithubStart, TOKEN_KEY } from './backend'
 import type { Application, BoardData, Status } from './types'
 import { STATUS_COLOR, STATUS_LABEL, STATUS_ORDER } from './types'
 const COMBO_KEY = 'agentCombo'
@@ -2533,6 +2533,16 @@ function SettingsModal({ token, combos, onClose }: {
           <p className="set-status mono">
             {current ? (current.ready ? '✓ 준비됨' : `· ${current.reason ?? '자격증명 미등록'}`) : '· 사용 불가 조합'}
           </p>
+          {httpMode && (
+            <div className="set-field">
+              <span className="set-label mono">GitHub 연결 (BYO 저장소)</span>
+              <button type="button" className="text-action" onClick={() =>
+                void cpGithubStart(token).then((u) => { window.location.href = u })
+                  .catch(() => setNote('GitHub 연결 실패'))}>
+                저장소 연결 · App 설치
+              </button>
+            </div>
+          )}
         </div>
         <footer className="settings-foot">
           {note && <span className="set-note mono">{note}</span>}
