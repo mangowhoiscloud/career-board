@@ -313,6 +313,12 @@ export async function createFile(
   content: string,
   message: string,
 ): Promise<void> {
+  if (httpMode) {
+    // 보드→러너 런 제출 브리지(#21): control-plane(bus_kv)에 REQ 적재 → 러너가 cp_list로 끌어가 처리.
+    // GitHub API 직접 호출은 세션 토큰으로 401이라 httpMode에선 불가.
+    await cpWriteState(token, path, { content, status: 'pending' })
+    return
+  }
   const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${encodeURI(path)}`, {
     method: 'PUT',
     headers: { ...headers(token), 'Content-Type': 'application/json' },
