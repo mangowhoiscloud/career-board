@@ -11,7 +11,7 @@ import {
 } from './api'
 import { clearStore, patchEntry, prefetchAll, revalidate, useEntry, type Entry, type StoreKey } from './store'
 import { mailReadKey, markMailRead, pruneMailRead, useMailReadOverlay } from './mailRead'
-import { httpMode, exchangeCodeFromUrl, loginRedirect, cpLogout, cpGithubStart, TOKEN_KEY } from './backend'
+import { httpMode, exchangeCodeFromUrl, loginRedirect, cpLogout, cpGithubStart, cpProviders, cpVaultPut, TOKEN_KEY } from './backend'
 import type { Application, BoardData, Status } from './types'
 import { STATUS_COLOR, STATUS_LABEL, STATUS_ORDER } from './types'
 const COMBO_KEY = 'agentCombo'
@@ -2448,11 +2448,17 @@ function SettingsModal({ token, combos, onClose }: {
   const [model, setModel] = useState('')
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<string | null>(null)
+  const [apiKey, setApiKey] = useState('')
+  const [savingKey, setSavingKey] = useState(false)
+  // httpMode: readiness는 세션 본인 볼트 기준(/api/providers). runner-state combos(운영자 스코프)가
+  // 아니라 로그인 유저 본인의 등록 현황을 반영 — 멀티유저 격리.
+  const [liveCombos, setLiveCombos] = useState<RunnerCombo[] | null>(null)
+  const effCombos = httpMode && liveCombos ? liveCombos : combos
 
   // 구독은 OpenAI만(디렉티브) — anthropic-subscription 숨김
   const shown = useMemo(
-    () => combos.filter((c) => !(c.provider === 'anthropic' && c.auth === 'subscription')),
-    [combos],
+    () => effCombos.filter((c) => !(c.provider === 'anthropic' && c.auth === 'subscription')),
+    [effCombos],
   )
   const providers = useMemo(() => [...new Set(shown.map((c) => c.provider))], [shown])
   const authsFor = (p: string) => [...new Set(shown.filter((c) => c.provider === p).map((c) => c.auth))]
@@ -2471,13 +2477,31 @@ function SettingsModal({ token, combos, onClose }: {
     }).catch(() => {})
   }, [token])
 
+  const refreshProviders = useCallback(() => {
+    if (!httpMode) return  // PAT 모드(운영자 GitHub Pages)는 로컬 자격증명 — BYO 불필요
+    void cpProviders(token).then((r) => setLiveCombos(r.combos as RunnerCombo[])).catch(() => {})
+  }, [token])
+  useEffect(refreshProviders, [refreshProviders])
+
   useEffect(() => {
     const c = comboFor(provider, auth)
     if (c && !c.models.some((m) => m.id === model)) {
       setModel(c.models.find((m) => m.default)?.id ?? c.models[0]?.id ?? '')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [provider, auth, combos])
+  }, [provider, auth, effCombos])
+
+  const saveKey = async () => {
+    if (!apiKey.trim()) { setNote('API 키를 입력하세요'); return }
+    setSavingKey(true); setNote(null)
+    try {
+      await cpVaultPut(token, provider, 'api_key', apiKey.trim())
+      setApiKey(''); setNote('키 저장됨')
+      refreshProviders()  // readiness 갱신 → 콤보가 준비됨으로 전환
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : '키 저장 실패')
+    } finally { setSavingKey(false) }
+  }
 
   const save = async () => {
     const c = comboFor(provider, auth)
@@ -2533,6 +2557,17 @@ function SettingsModal({ token, combos, onClose }: {
           <p className="set-status mono">
             {current ? (current.ready ? '✓ 준비됨' : `· ${current.reason ?? '자격증명 미등록'}`) : '· 사용 불가 조합'}
           </p>
+          {httpMode && auth === 'api_key' && (
+            <div className="set-field">
+              <span className="set-label mono">{provider} API 키 (BYO)</span>
+              <input type="password" className="set-select mono" placeholder="sk-…" value={apiKey}
+                     autoComplete="off" onChange={(e) => setApiKey(e.target.value)} />
+              <button type="button" className="text-action" disabled={savingKey || !apiKey.trim()}
+                      onClick={() => void saveKey()}>
+                {savingKey ? '저장 중…' : '키 저장'}
+              </button>
+            </div>
+          )}
           {httpMode && (
             <div className="set-field">
               <span className="set-label mono">GitHub 연결 (BYO 저장소)</span>

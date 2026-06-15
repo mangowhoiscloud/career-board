@@ -72,6 +72,24 @@ export async function cpGithubStart(token: string): Promise<string> {
   return (await res.json()).url as string
 }
 
+/* 세션 테넌트의 콤보 가용성(ready는 본인 볼트 기준) — 멀티유저 BYO 자격증명 readiness 원천.
+   runner-state의 combos(운영자 스코프)와 달리 로그인 유저 본인의 등록 현황을 반영한다. */
+export async function cpProviders(token: string): Promise<{ combos: unknown[] }> {
+  const res = await fetch(`${API_BASE}/api/providers`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(`프로바이더 조회 실패 (${res.status})`)
+  return res.json()
+}
+
+/* 세션 테넌트 BYO 자격증명 등록(API 키). 본인 tenant_id 스코프 — 유저 간 격리. */
+export async function cpVaultPut(token: string, provider: string, kind: string, value: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/vault/${provider}/${kind}`, {
+    method: 'POST',
+    headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value }),
+  })
+  if (!res.ok) throw new Error(`자격증명 저장 실패 (${res.status})`)
+}
+
 export async function cpLogout(token: string): Promise<void> {
   try {
     await fetch(`${API_BASE}/auth/logout`, { method: 'POST', headers: authHeaders(token) })
